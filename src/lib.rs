@@ -82,6 +82,7 @@
 //! ```
 
 pub mod error;
+pub mod grammar;
 pub mod index;
 pub mod json_schema;
 pub mod prelude;
