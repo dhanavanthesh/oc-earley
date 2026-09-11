@@ -93,6 +93,7 @@ pub mod vocabulary;
 
 pub use engine::{CompiledBackend, CompiledSchema, SemanticContract, TierReport};
 pub use error::{CompileError, CompileStage, Error, Result};
+pub use schema::{CompileLimits, CompileOptions};
 
 #[cfg(feature = "python-bindings")]
 mod python_bindings;

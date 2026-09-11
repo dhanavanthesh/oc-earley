@@ -50,7 +50,10 @@ pub struct TierReport {
     pub grammar_productions: usize,
     pub sccs: Vec<SccReport>,
     pub selected_backend: BackendKind,
+    pub nfa_states: Option<usize>,
+    pub nfa_transitions: Option<usize>,
     pub dfa_states: Option<usize>,
+    pub dfa_bytes: Option<usize>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -262,7 +265,10 @@ fn build_report(
         } else {
             BackendKind::StructuralPending
         },
+        nfa_states: dfa.map(CompiledByteDfa::nfa_state_count),
+        nfa_transitions: dfa.map(CompiledByteDfa::nfa_transition_count),
         dfa_states: dfa.map(CompiledByteDfa::state_count),
+        dfa_bytes: dfa.map(CompiledByteDfa::memory_bytes),
         diagnostics,
     })
 }

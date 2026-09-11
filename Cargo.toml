@@ -57,5 +57,4 @@ bench = false
 
 [[bin]]
 name = "oc-earley"
-test = false
 bench = false
