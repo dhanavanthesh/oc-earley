@@ -7,6 +7,8 @@ use regex_automata::util::primitives::StateID as AutomataStateId;
 use regex_automata::Anchored;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+use crate::error::{CompileError, CompileStage};
+use crate::grammar::CompiledByteDfa;
 use crate::prelude::*;
 use crate::vocabulary::Vocabulary;
 use crate::{Error, Result};
@@ -103,87 +105,104 @@ pub struct Index {
 impl Index {
     /// Builds an `Index` from regular expression and vocabulary tokens.
     pub fn new(regex: &str, vocabulary: &Vocabulary) -> Result<Self> {
-        let vocab_size = vocabulary.len();
-        let eos_token_id = vocabulary.eos_token_id();
         let dfa = DFA::new(regex).map_err(Box::new)?;
-        let start_state = match dfa.universal_start_state(Anchored::Yes) {
-            Some(s) => s,
-            None => return Err(Error::DfaHasNoStartState),
-        };
+        Self::project_byte_dfa(&dfa, vocabulary, ProjectionPolicy::Legacy { regex })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by the schema compiler integration")
+    )]
+    pub(crate) fn from_certified_dfa(
+        dfa: &CompiledByteDfa,
+        vocabulary: &Vocabulary,
+    ) -> Result<Self> {
+        Self::project_byte_dfa(dfa, vocabulary, ProjectionPolicy::Exact)
+    }
+
+    fn project_byte_dfa<D: ByteDfa>(
+        dfa: &D,
+        vocabulary: &Vocabulary,
+        policy: ProjectionPolicy<'_>,
+    ) -> Result<Self> {
+        let vocab_size = vocabulary_width(vocabulary)?;
+        let eos_token_id = vocabulary.eos_token_id();
+        let start_state = dfa.start_state().ok_or(Error::DfaHasNoStartState)?;
+        let stable_start = dfa.stable_state_id(start_state);
+
+        if matches!(policy, ProjectionPolicy::Exact)
+            && !dfa.is_live(start_state)
+            && !dfa.is_accepting(start_state)
+        {
+            return Ok(Self {
+                initial_state: stable_start,
+                final_states: HashSet::default(),
+                transitions: HashMap::default(),
+                eos_token_id,
+                vocab_size,
+            });
+        }
 
         let mut transitions: HashMap<StateId, HashMap<TokenId, StateId>> = HashMap::default();
         let mut final_states: HashSet<StateId> = HashSet::default();
 
-        let mut seen: HashSet<AutomataStateId> = HashSet::from_iter([start_state]);
-        let mut next_states: Vec<AutomataStateId> = vec![start_state];
-        let mut is_useful_state_cache: HashMap<AutomataStateId, bool> = HashMap::default();
+        let mut seen: HashSet<D::State> = HashSet::from_iter([start_state]);
+        let mut next_states = vec![start_state];
+        let mut live_cache: HashMap<D::State, bool> = HashMap::default();
 
         while let Some(current_state) = next_states.pop() {
             let mut has_valid_transitions = false;
+            let stable_current = dfa.stable_state_id(current_state);
 
-            if dfa.is_match_state(dfa.next_eoi_state(current_state)) {
-                final_states.insert(current_state.as_u32());
+            if dfa.is_accepting(current_state) {
+                final_states.insert(stable_current);
                 has_valid_transitions = true;
             }
 
             'token_loop: for (token, ids) in vocabulary.tokens().iter() {
-                if ids.contains(&eos_token_id) {
-                    continue;
-                }
-
                 let mut next_state = current_state;
                 for transition_byte in token {
                     next_state = dfa.next_state(next_state, *transition_byte);
-                    if dfa.is_dead_state(next_state) || dfa.is_quit_state(next_state) {
+                    if dfa.is_dead(next_state) {
                         continue 'token_loop;
                     }
                 }
 
-                // Determine if the `next_state` is a useful state to keep in the index.
-                // We use a cache to avoid re-evaluating the same state multiple times.
-                let is_useful_state =
-                    *is_useful_state_cache.entry(next_state).or_insert_with(|| {
-                        let check_is_intermediate_state = || {
-                            dfa.byte_classes().representatives(..).any(|repr| {
-                                if let Some(byte) = repr.as_u8() {
-                                    let s = dfa.next_state(next_state, byte);
-                                    !dfa.is_dead_state(s) && !dfa.is_quit_state(s)
-                                } else {
-                                    false
-                                }
-                            })
-                        };
-                        let is_full_match_state =
-                            dfa.is_match_state(dfa.next_eoi_state(next_state));
-
-                        // A state is useful if it is a match state OR it can transition further.
-                        // Performance: We use short-circuiting here. `check_is_intermediate_state()` is
-                        // computationally expensive but is ONLY executed if `is_full_match_state` is false.
-                        is_full_match_state || check_is_intermediate_state()
-                    });
-
-                if is_useful_state {
+                let is_live = *live_cache
+                    .entry(next_state)
+                    .or_insert_with(|| dfa.is_live(next_state));
+                if is_live {
                     has_valid_transitions = true;
+                    let stable_next = dfa.stable_state_id(next_state);
                     for token_id in ids {
-                        transitions
-                            .entry(current_state.as_u32())
-                            .or_default()
-                            .insert(*token_id, next_state.as_u32());
+                        let row = transitions.entry(stable_current).or_default();
+                        if row
+                            .get(token_id)
+                            .is_some_and(|existing| *existing != stable_next)
+                        {
+                            return Err(Error::AmbiguousTokenId {
+                                token_id: *token_id,
+                            });
+                        }
+                        row.insert(*token_id, stable_next);
                     }
-                    if !seen.contains(&next_state) {
-                        seen.insert(next_state);
+                    if seen.insert(next_state) {
                         next_states.push(next_state);
                     }
                 }
             }
 
-            // If the current state has no valid transitions and is not a match state,
-            // it means the vocabulary is incompatible with the regex.
-            if !has_valid_transitions && !dfa.is_match_state(current_state) {
+            if !has_valid_transitions && !dfa.is_accepting(current_state) {
                 let mut valid_characters = Vec::new();
                 for byte in 0..=255u8 {
                     let test_state = dfa.next_state(current_state, byte);
-                    if !dfa.is_dead_state(test_state) && !dfa.is_quit_state(test_state) {
+                    let report_byte = match policy {
+                        ProjectionPolicy::Legacy { .. } => !dfa.is_dead(test_state),
+                        ProjectionPolicy::Exact => {
+                            !dfa.is_dead(test_state) && dfa.is_live(test_state)
+                        }
+                    };
+                    if report_byte {
                         if byte.is_ascii() {
                             valid_characters.push(char::from(byte).to_string());
                         } else {
@@ -193,8 +212,8 @@ impl Index {
                 }
 
                 return Err(Error::IncompatibleVocabulary {
-                    regex: regex.to_string(),
-                    error_state: current_state.as_u32(),
+                    regex: policy.label().to_owned(),
+                    error_state: stable_current,
                     missing_tokens: valid_characters,
                 });
             }
@@ -209,7 +228,7 @@ impl Index {
         }
 
         Ok(Self {
-            initial_state: start_state.as_u32(),
+            initial_state: stable_start,
             final_states,
             transitions,
             eos_token_id,
@@ -241,7 +260,7 @@ impl Index {
     pub fn allowed_tokens(&self, state: &StateId) -> Option<Vec<TokenId>> {
         self.transitions
             .get(state)
-            .map(|res| res.keys().cloned().collect())
+            .map(|transitions| transitions.keys().copied().collect())
     }
 
     pub fn allowed_tokens_iter(&self, state: &StateId) -> Option<impl Iterator<Item = &TokenId>> {
@@ -261,6 +280,126 @@ impl Index {
     }
 }
 
+trait ByteDfa {
+    type State: Copy + Eq + std::hash::Hash;
+
+    fn start_state(&self) -> Option<Self::State>;
+    fn next_state(&self, state: Self::State, byte: u8) -> Self::State;
+    fn is_dead(&self, state: Self::State) -> bool;
+    fn is_accepting(&self, state: Self::State) -> bool;
+    fn is_live(&self, state: Self::State) -> bool;
+    fn stable_state_id(&self, state: Self::State) -> StateId;
+}
+
+impl ByteDfa for DFA<Vec<u32>> {
+    type State = AutomataStateId;
+
+    fn start_state(&self) -> Option<Self::State> {
+        self.universal_start_state(Anchored::Yes)
+    }
+
+    fn next_state(&self, state: Self::State, byte: u8) -> Self::State {
+        Automaton::next_state(self, state, byte)
+    }
+
+    fn is_dead(&self, state: Self::State) -> bool {
+        self.is_dead_state(state) || self.is_quit_state(state)
+    }
+
+    fn is_accepting(&self, state: Self::State) -> bool {
+        self.is_match_state(self.next_eoi_state(state))
+    }
+
+    fn is_live(&self, state: Self::State) -> bool {
+        self.is_accepting(state)
+            || self
+                .byte_classes()
+                .representatives(..)
+                .any(|representative| {
+                    representative.as_u8().is_some_and(|byte| {
+                        let next = Automaton::next_state(self, state, byte);
+                        !self.is_dead_state(next) && !self.is_quit_state(next)
+                    })
+                })
+    }
+
+    fn stable_state_id(&self, state: Self::State) -> StateId {
+        state.as_u32()
+    }
+}
+
+impl ByteDfa for CompiledByteDfa {
+    type State = StateId;
+
+    fn start_state(&self) -> Option<Self::State> {
+        Some(CompiledByteDfa::start_state(self))
+    }
+
+    fn next_state(&self, state: Self::State, byte: u8) -> Self::State {
+        CompiledByteDfa::next_state(self, state, byte)
+    }
+
+    fn is_dead(&self, state: Self::State) -> bool {
+        CompiledByteDfa::is_dead(self, state)
+    }
+
+    fn is_accepting(&self, state: Self::State) -> bool {
+        CompiledByteDfa::is_accepting(self, state)
+    }
+
+    fn is_live(&self, state: Self::State) -> bool {
+        CompiledByteDfa::is_live(self, state)
+    }
+
+    fn stable_state_id(&self, state: Self::State) -> StateId {
+        state
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionPolicy<'a> {
+    Legacy {
+        regex: &'a str,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by the schema compiler integration")
+    )]
+    Exact,
+}
+
+impl<'a> ProjectionPolicy<'a> {
+    fn label(self) -> &'a str {
+        match self {
+            Self::Legacy { regex } => regex,
+            Self::Exact => "certified byte DFA",
+        }
+    }
+}
+
+fn vocabulary_width(vocabulary: &Vocabulary) -> Result<usize> {
+    let maximum = vocabulary
+        .tokens()
+        .values()
+        .flatten()
+        .copied()
+        .max()
+        .map_or(vocabulary.eos_token_id(), |id| {
+            id.max(vocabulary.eos_token_id())
+        });
+    usize::try_from(maximum)
+        .ok()
+        .and_then(|maximum| maximum.checked_add(1))
+        .ok_or_else(|| {
+            CompileError::ResourceLimitExceeded {
+                stage: CompileStage::VocabularyProjection,
+                observed: usize::MAX,
+                limit: usize::MAX.saturating_sub(1),
+            }
+            .into()
+        })
+}
+
 impl std::fmt::Display for Index {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Index object with transitions:")?;
@@ -274,6 +413,20 @@ impl std::fmt::Display for Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grammar::{RegularExpression, DEAD_DFA_STATE};
+    use crate::schema::{CompileLimits, SchemaPointer};
+
+    fn compiled_dfa(pattern: &str) -> CompiledByteDfa {
+        CompiledByteDfa::compile(
+            &RegularExpression::Atom {
+                forward: pattern.to_owned(),
+                reverse: None,
+            },
+            &CompileLimits::default(),
+            &SchemaPointer(String::new()),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn index_from_regex() {
@@ -435,5 +588,89 @@ mod tests {
             state = index.next_state(&state, &token_id).expect("Transit failed");
         }
         assert!(index.is_final_state(&state));
+    }
+
+    #[test]
+    fn certified_projection_supports_sparse_ids_and_byte_aliases() {
+        let dfa = compiled_dfa(&regex::escape(r#""done""#));
+        let mut vocabulary = Vocabulary::new(100);
+        vocabulary.try_insert(r#""done""#, 42).unwrap();
+        vocabulary.try_insert(r#""done""#, 96).unwrap();
+        vocabulary.try_insert(r#"""#, 1).unwrap();
+        vocabulary.try_insert("done", 2).unwrap();
+
+        let index = Index::from_certified_dfa(&dfa, &vocabulary).unwrap();
+        assert_eq!(index.initial_state(), 0);
+        assert_eq!(index.vocab_size(), 101);
+        let allowed = index.allowed_tokens(&0).unwrap();
+        assert!(allowed.contains(&1));
+        assert!(allowed.contains(&42));
+        assert!(allowed.contains(&96));
+
+        let final_state = index.next_state(&0, &42).unwrap();
+        assert!(index.is_final_state(&final_state));
+        assert!(index.allowed_tokens(&final_state).unwrap().contains(&100));
+        assert_eq!(index.next_state(&final_state, &100), None);
+    }
+
+    #[test]
+    fn legacy_projection_sizes_sparse_token_ids() {
+        let mut vocabulary = Vocabulary::new(100);
+        vocabulary.try_insert("x", 96).unwrap();
+        let index = Index::new("x", &vocabulary).unwrap();
+        assert_eq!(index.vocab_size(), 101);
+        assert!(index
+            .allowed_tokens(&index.initial_state())
+            .unwrap()
+            .contains(&96));
+    }
+
+    #[test]
+    fn certified_projection_prunes_dead_token_prefixes() {
+        let dfa = compiled_dfa("ab");
+        let mut vocabulary = Vocabulary::new(3);
+        vocabulary.try_insert("ax", 0).unwrap();
+        vocabulary.try_insert("a", 1).unwrap();
+        vocabulary.try_insert("b", 2).unwrap();
+
+        let index = Index::from_certified_dfa(&dfa, &vocabulary).unwrap();
+        let allowed = index.allowed_tokens(&0).unwrap();
+        assert!(!allowed.contains(&0));
+        assert!(allowed.contains(&1));
+        let after_a = index.next_state(&0, &1).unwrap();
+        assert_eq!(index.allowed_tokens(&after_a).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn certified_projection_rejects_ambiguous_token_ids() {
+        let dfa = compiled_dfa("a|bc");
+        let mut vocabulary = Vocabulary::new(2);
+        vocabulary.try_insert("a", 0).unwrap();
+        vocabulary.try_insert("b", 0).unwrap();
+        vocabulary.try_insert("c", 1).unwrap();
+
+        assert!(matches!(
+            Index::from_certified_dfa(&dfa, &vocabulary),
+            Err(Error::AmbiguousTokenId { token_id: 0 })
+        ));
+    }
+
+    #[test]
+    fn empty_language_projects_to_an_empty_mask() {
+        let dfa = CompiledByteDfa::compile(
+            &RegularExpression::Empty,
+            &CompileLimits::default(),
+            &SchemaPointer(String::new()),
+        )
+        .unwrap();
+        let mut vocabulary = Vocabulary::new(10);
+        vocabulary.try_insert("anything", 9).unwrap();
+
+        let index = Index::from_certified_dfa(&dfa, &vocabulary).unwrap();
+        assert_eq!(index.initial_state(), 0);
+        assert_eq!(index.vocab_size(), 11);
+        assert!(index.final_states().is_empty());
+        assert!(index.allowed_tokens(&0).is_none());
+        assert_eq!(dfa.next_state(0, b'x'), DEAD_DFA_STATE);
     }
 }

@@ -18,6 +18,8 @@ pub enum Error {
     // Vocabulary Errors
     #[error("EOS token should not be inserted into Vocabulary")]
     EOSTokenDisallowed,
+    #[error("token ID {token_id} maps to byte strings that reach different DFA states")]
+    AmbiguousTokenId { token_id: u32 },
     #[error(transparent)]
     TokenizersError(#[from] tokenizers::Error),
     #[error("Unsupported tokenizer for {model}: {reason}, please open an issue with the full error message: https://github.com/dhanavanthesh/oc-earley/issues")]
