@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! Creates `Vocabulary` manually or from pretrained large language model.
 
 use bincode::{Decode, Encode};
@@ -6,6 +9,7 @@ use locator::{HFLocator, Locator};
 #[cfg(feature = "hugginface-hub")]
 use processor::TokenProcessor;
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet;
 #[cfg(feature = "hugginface-hub")]
 use tokenizers::normalizers::Sequence;
 #[cfg(feature = "hugginface-hub")]
@@ -18,6 +22,7 @@ use crate::{Error, Result};
 mod locator;
 #[cfg(feature = "hugginface-hub")]
 mod processor;
+pub(crate) mod reverse;
 
 /// `Vocabulary` of large language model.
 ///
@@ -151,7 +156,10 @@ impl Vocabulary {
             return Err(Error::EOSTokenDisallowed);
         }
         let token = token.into();
-        self.tokens.entry(token).or_default().push(id);
+        let ids = self.tokens.entry(token).or_default();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
         Ok(())
     }
 
@@ -228,9 +236,12 @@ impl TryFrom<(TokenId, HashMap<Token, Vec<TokenId>>)> for Vocabulary {
     type Error = Error;
 
     fn try_from(values: (TokenId, HashMap<Token, Vec<TokenId>>)) -> Result<Self, Self::Error> {
-        let (eos_token_id, tokens) = values;
+        let (eos_token_id, mut tokens) = values;
         if tokens.iter().any(|(_, ids)| ids.contains(&eos_token_id)) {
             return Err(Error::EOSTokenDisallowed);
+        }
+        for ids in tokens.values_mut() {
+            deduplicate_ids(ids);
         }
         Ok(Vocabulary {
             eos_token_id,
@@ -248,16 +259,22 @@ impl TryFrom<(TokenId, HashMap<String, Vec<TokenId>>)> for Vocabulary {
             eos_token_id,
             tokens: tokens
                 .into_iter()
-                .map(|(k, v)| {
+                .map(|(k, mut v)| {
                     if v.contains(&eos_token_id) {
                         Err(Error::EOSTokenDisallowed)
                     } else {
+                        deduplicate_ids(&mut v);
                         Ok((k.as_bytes().to_vec(), v))
                     }
                 })
                 .collect::<Result<HashMap<Token, Vec<TokenId>>, _>>()?,
         })
     }
+}
+
+fn deduplicate_ids(ids: &mut Vec<TokenId>) {
+    let mut seen = FxHashSet::default();
+    ids.retain(|id| seen.insert(*id));
 }
 
 #[cfg(test)]

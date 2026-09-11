@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 from oc_earley import Guide
 
 try:
@@ -16,6 +19,11 @@ def allocate_token_bitmask(vocab_size: int) -> np.ndarray:
         -1,
         dtype=np.int32,
     )
+
+
+def allocate_guide_bitmask(guide: Guide, logits_width: int = 0) -> np.ndarray:
+    """Allocate enough words for both the guide and a padded logits array."""
+    return allocate_token_bitmask(max(guide.vocab_size, logits_width))
 
 
 @numba.njit

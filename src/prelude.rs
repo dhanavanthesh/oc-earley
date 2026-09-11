@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! Library's interface essentials.
 
 #[cfg(feature = "hugginface-hub")]
@@ -5,9 +8,9 @@ pub use tokenizers::FromPretrainedParameters;
 
 pub use super::earley::{CompiledEarley, EarleyRecognizer, EarleyStats};
 pub use super::engine::{
-    Advance, BackendKind, BackendPolicy, CompileProfile, CompiledBackend, CompiledSchema,
-    Recognizer, RecognizerCheckpoint, RecognizerState, RecognizerStats, SemanticContract,
-    TierReport,
+    Advance, BackendKind, BackendPolicy, CompileProfile, CompiledBackend, CompiledSchema, Guide,
+    MaskStats, Recognizer, RecognizerCheckpoint, RecognizerState, RecognizerStats,
+    SemanticContract, TierReport,
 };
 pub use super::grammar::Grammar;
 pub use super::index::Index;

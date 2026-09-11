@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! The Errors that may occur within the crate.
 
 use thiserror::Error;
@@ -20,6 +23,8 @@ pub enum Error {
     EOSTokenDisallowed,
     #[error("token ID {token_id} maps to byte strings that reach different DFA states")]
     AmbiguousTokenId { token_id: u32 },
+    #[error("non-EOS tokens must contain at least one byte")]
+    EmptyTokenDisallowed,
     #[error(transparent)]
     TokenizersError(#[from] tokenizers::Error),
     #[error("Unsupported tokenizer for {model}: {reason}, please open an issue with the full error message: https://github.com/dhanavanthesh/oc-earley/issues")]
@@ -117,6 +122,8 @@ pub enum RuntimeResource {
     ActiveScans,
     LeoItems,
     CheckpointHistory,
+    MaskTraversal,
+    CommittedTokens,
 }
 
 impl std::fmt::Display for RuntimeResource {
@@ -140,6 +147,20 @@ pub enum RuntimeError {
         expected_generation: u64,
         found_generation: u64,
     },
+    #[error("guide is finished")]
+    GuideFinished,
+    #[error("EOS token is not allowed in a non-accepting state")]
+    EosNotAccepting,
+    #[error("unknown token ID {token_id}")]
+    UnknownTokenId { token_id: u32 },
+    #[error("token ID {token_id} is not allowed in the current state")]
+    TokenNotAllowed { token_id: u32 },
+    #[error("Cannot roll back {requested} token(s); only {available} checkpoint(s) are available")]
+    RollbackUnavailable { requested: usize, available: usize },
+    #[error("allocation failed for {resource}")]
+    AllocationFailed { resource: RuntimeResource },
+    #[error("DFA state IDs are unavailable for structural guides")]
+    StateIdUnavailable,
     #[error("runtime invariant failed: {message}")]
     InternalInvariant { message: &'static str },
 }

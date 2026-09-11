@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 # Provides kernels for masking a logits tensor,
 # using the write_into_mask method on the `Guide` object and the bitmask
 # which it writes into a tensor.
@@ -31,6 +34,11 @@ def allocate_token_bitmask(vocab_size: int) -> torch.Tensor:
         dtype=torch.int32,
         pin_memory=torch.cuda.is_available(),
     )
+
+
+def allocate_guide_bitmask(guide: Guide, logits_width: int = 0) -> torch.Tensor:
+    """Allocate enough words for both the guide and a padded logits tensor."""
+    return allocate_token_bitmask(max(guide.vocab_size, logits_width))
 
 
 # This takes roughly 23 microseconds per run, with a bitmask of

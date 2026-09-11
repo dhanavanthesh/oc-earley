@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! Building an `Index` to efficiently map vocabulary tokens to state transitions.
 
 use bincode::{Decode, Encode};
@@ -273,6 +276,10 @@ impl Index {
 
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
+    }
+
+    pub fn eos_token_id(&self) -> TokenId {
+        self.eos_token_id
     }
 }
 

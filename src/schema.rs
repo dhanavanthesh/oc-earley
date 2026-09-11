@@ -8,7 +8,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::error::{CompileError, CompileStage};
 
-pub const COMPILED_FORMAT_VERSION: u32 = 1;
+pub const COMPILED_FORMAT_VERSION: u32 = 2;
 pub const PROFILE_ID: &str = "K1";
 pub const CANONICAL_POLICY_ID: &str = "oc-earley-json-compact-v1";
 pub const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -84,6 +84,12 @@ pub struct CompileLimits {
     pub max_action_entries: usize,
     pub max_goto_entries: usize,
     pub max_reported_conflicts: usize,
+    pub max_vocabulary_slots: usize,
+    pub max_total_token_bytes: usize,
+    pub max_token_bytes: usize,
+    pub max_trie_nodes: usize,
+    pub max_trie_edges: usize,
+    pub max_trie_terminal_ids: usize,
 }
 
 impl Default for CompileLimits {
@@ -106,6 +112,12 @@ impl Default for CompileLimits {
             max_action_entries: 2_000_000,
             max_goto_entries: 1_000_000,
             max_reported_conflicts: 1_000,
+            max_vocabulary_slots: 2_000_000,
+            max_total_token_bytes: 512 * 1024 * 1024,
+            max_token_bytes: 1024 * 1024,
+            max_trie_nodes: 64_000_000,
+            max_trie_edges: 64_000_000,
+            max_trie_terminal_ids: 4_000_000,
         }
     }
 }
@@ -120,6 +132,8 @@ pub struct RuntimeLimits {
     pub max_active_scans: usize,
     pub max_leo_items: usize,
     pub max_checkpoint_history: usize,
+    pub max_mask_trie_edges: usize,
+    pub max_committed_tokens: usize,
 }
 
 impl Default for RuntimeLimits {
@@ -133,6 +147,8 @@ impl Default for RuntimeLimits {
             max_active_scans: 1_000_000,
             max_leo_items: 1_000_000,
             max_checkpoint_history: 100_000,
+            max_mask_trie_edges: 64_000_000,
+            max_committed_tokens: 16 * 1024 * 1024,
         }
     }
 }

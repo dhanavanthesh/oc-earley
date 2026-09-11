@@ -1,6 +1,8 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! Provides tools and interfaces to integrate the crate's functionality with Python.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bincode::{config, Decode, Encode};
@@ -19,6 +21,7 @@ use crate::schema::COMPILED_FORMAT_VERSION;
 
 const SERIAL_MAGIC: &[u8; 8] = b"OCEARLEY";
 const SERIAL_HEADER_LEN: usize = 13;
+const MAX_SERIALIZED_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -33,6 +36,11 @@ fn encode_object<T: Encode>(value: &T, kind: ObjectKind, label: &str) -> PyResul
     let payload = bincode::encode_to_vec(value, config::standard()).map_err(|error| {
         PyValueError::new_err(format!("Serialization of {label} failed: {error}"))
     })?;
+    if payload.len() > MAX_SERIALIZED_BYTES - SERIAL_HEADER_LEN {
+        return Err(PyValueError::new_err(format!(
+            "Serialization of {label} failed: payload exceeds {MAX_SERIALIZED_BYTES} bytes"
+        )));
+    }
     let capacity = SERIAL_HEADER_LEN
         .checked_add(payload.len())
         .ok_or_else(|| PyValueError::new_err(format!("Serialization of {label} is too large")))?;
@@ -52,6 +60,11 @@ fn decode_object<T: Decode<()>>(
     expected_kind: ObjectKind,
     label: &str,
 ) -> PyResult<T> {
+    if binary_data.len() > MAX_SERIALIZED_BYTES {
+        return Err(PyValueError::new_err(format!(
+            "Deserialization of {label} failed: payload exceeds {MAX_SERIALIZED_BYTES} bytes"
+        )));
+    }
     if binary_data.len() < SERIAL_HEADER_LEN {
         return Err(PyValueError::new_err(format!(
             "Deserialization of {label} failed: truncated header"
@@ -76,10 +89,13 @@ fn decode_object<T: Decode<()>>(
         )));
     }
     let payload = &binary_data[SERIAL_HEADER_LEN..];
-    let (value, consumed): (T, usize) = bincode::decode_from_slice(payload, config::standard())
-        .map_err(|error| {
-            PyValueError::new_err(format!("Deserialization of {label} failed: {error}"))
-        })?;
+    let (value, consumed): (T, usize) = bincode::decode_from_slice(
+        payload,
+        config::standard().with_limit::<MAX_SERIALIZED_BYTES>(),
+    )
+    .map_err(|error| {
+        PyValueError::new_err(format!("Deserialization of {label} failed: {error}"))
+    })?;
     if consumed != payload.len() {
         return Err(PyValueError::new_err(format!(
             "Deserialization of {label} failed: trailing data"
@@ -95,143 +111,233 @@ macro_rules! type_name {
     };
 }
 
-/// Guide object based on Index.
-#[pyclass(name = "Guide", module = "oc_earley", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+enum GuideSource {
+    Index(Index),
+    Schema {
+        schema: Vec<u8>,
+        vocabulary: Vocabulary,
+        expected_backend: u8,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+struct GuidePayload {
+    source: GuideSource,
+    max_rollback: usize,
+    committed_token_ids: Vec<TokenId>,
+    finished: bool,
+}
+
+/// Token-level guide for regular and structural schema backends.
+#[pyclass(name = "Guide", module = "oc_earley", from_py_object)]
+#[derive(Clone, Debug)]
 pub struct PyGuide {
-    state: StateId,
-    index: PyIndex,
-    state_cache: VecDeque<StateId>,
+    inner: Guide,
+    source: GuideSource,
+    max_rollback: usize,
+}
+
+impl PartialEq for PyGuide {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.max_rollback == other.max_rollback
+            && self.inner.committed_token_ids() == other.inner.committed_token_ids()
+            && self.inner.is_finished() == other.inner.is_finished()
+            && self.inner.state_fingerprint() == other.inner.state_fingerprint()
+    }
+}
+
+impl PyGuide {
+    fn from_compiled(compiled: &PyCompiledSchema, max_rollback: usize) -> PyResult<Self> {
+        let inner = compiled
+            .compiled
+            .guide(max_rollback, crate::schema::RuntimeLimits::default())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self {
+            inner,
+            source: GuideSource::Schema {
+                schema: compiled.schema.clone(),
+                vocabulary: compiled.vocabulary.clone(),
+                expected_backend: backend_code(compiled.compiled.report.selected_backend),
+            },
+            max_rollback,
+        })
+    }
+
+    fn rebuild(payload: GuidePayload) -> PyResult<Self> {
+        let runtime_limits = crate::schema::RuntimeLimits::default();
+        if payload.max_rollback > runtime_limits.max_checkpoint_history
+            || payload.committed_token_ids.len() > runtime_limits.max_committed_tokens
+        {
+            return Err(PyValueError::new_err(
+                "Guide history exceeds the configured decoding limits",
+            ));
+        }
+        let mut guide = match &payload.source {
+            GuideSource::Index(index) => Self {
+                inner: Guide::from_index(Arc::new(index.clone()), payload.max_rollback)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?,
+                source: payload.source.clone(),
+                max_rollback: payload.max_rollback,
+            },
+            GuideSource::Schema {
+                schema,
+                vocabulary,
+                expected_backend,
+            } => {
+                let compiled =
+                    CompiledSchema::compile(schema, vocabulary, &CompileOptions::default())?;
+                let actual = backend_code(compiled.report.selected_backend);
+                if actual != *expected_backend {
+                    return Err(PyValueError::new_err(
+                        "Serialized Guide selected a different backend during reconstruction",
+                    ));
+                }
+                Self {
+                    inner: compiled
+                        .guide(
+                            payload.max_rollback,
+                            crate::schema::RuntimeLimits::default(),
+                        )
+                        .map_err(|error| PyValueError::new_err(error.to_string()))?,
+                    source: payload.source.clone(),
+                    max_rollback: payload.max_rollback,
+                }
+            }
+        };
+        for token_id in payload.committed_token_ids {
+            guide
+                .inner
+                .advance(token_id)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        }
+        if guide.inner.is_finished() != payload.finished {
+            return Err(PyValueError::new_err(
+                "Serialized Guide has an inconsistent finished state",
+            ));
+        }
+        Ok(guide)
+    }
 }
 
 #[pymethods]
 impl PyGuide {
-    /// Creates a Guide object based on Index.
+    /// Creates a guide from a precomputed regular-language index.
     #[new]
     #[pyo3(signature = (index, max_rollback=32))]
-    fn __new__(index: PyIndex, max_rollback: usize) -> Self {
-        PyGuide {
-            state: index.get_initial_state(),
-            index,
-            state_cache: VecDeque::with_capacity(max_rollback),
-        }
+    fn __new__(index: PyIndex, max_rollback: usize) -> PyResult<Self> {
+        Ok(Self {
+            inner: Guide::from_index(Arc::clone(&index.0), max_rollback)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            source: GuideSource::Index((*index.0).clone()),
+            max_rollback,
+        })
     }
 
-    /// Retrieves current state id of the Guide.
-    fn get_state(&self) -> StateId {
-        self.state
+    /// Returns the DFA state for a legacy regular guide.
+    fn get_state(&self) -> PyResult<StateId> {
+        self.inner
+            .dfa_state()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    /// Gets the list of allowed tokens for the current state.
-    fn get_tokens(&self) -> PyResult<Vec<TokenId>> {
-        self.index
-            .get_allowed_tokens(self.state)
-            // Since Guide advances only through the states offered by the Index, it means
-            // None here shouldn't happen and it's an issue at Index creation step
-            .ok_or(PyErr::new::<PyValueError, _>(format!(
-                "No allowed tokens available for the state {}",
-                self.state
-            )))
+    /// Returns token IDs enabled by the current exact mask.
+    fn get_tokens(&mut self) -> PyResult<Vec<TokenId>> {
+        self.inner
+            .get_tokens()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    /// Get the number of rollback steps available.
+    #[getter]
+    fn backend(&self) -> &'static str {
+        backend_name(self.inner.backend())
+    }
+
+    #[getter]
+    fn vocab_size(&self) -> usize {
+        self.inner.vocab_size()
+    }
+
+    #[getter]
+    fn mask_words(&self) -> usize {
+        self.inner.mask_words()
+    }
+
+    #[getter]
+    fn position(&self) -> usize {
+        self.inner.position()
+    }
+
+    #[getter]
+    fn state_fingerprint(&self) -> u64 {
+        self.inner.state_fingerprint()
+    }
+
+    /// Returns the number of token checkpoints available for rollback.
     fn get_allowed_rollback(&self) -> usize {
-        self.state_cache.len()
+        self.inner.get_allowed_rollback()
     }
 
-    /// Guide moves to the next state provided by the token id and returns a list of allowed tokens, unless return_tokens is False.
+    /// Commits one token and optionally returns the next exact token set.
     #[pyo3(signature = (token_id, return_tokens=None))]
     fn advance(
         &mut self,
         token_id: TokenId,
         return_tokens: Option<bool>,
     ) -> PyResult<Option<Vec<TokenId>>> {
-        match self.index.get_next_state(self.state, token_id) {
-            Some(new_state) => {
-                // Free up space in state_cache if needed.
-                if self.state_cache.len() == self.state_cache.capacity() {
-                    self.state_cache.pop_front();
-                }
-                self.state_cache.push_back(self.state);
-                self.state = new_state;
-                if return_tokens.unwrap_or(true) {
-                    self.get_tokens().map(Some)
-                } else {
-                    Ok(None)
-                }
-            }
-            None => Err(PyErr::new::<PyValueError, _>(format!(
-                "No next state found for the current state: {} with token ID: {token_id}",
-                self.state
-            ))),
+        self.inner
+            .advance(token_id)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        if return_tokens.unwrap_or(true) {
+            self.get_tokens().map(Some)
+        } else {
+            Ok(None)
         }
     }
 
-    /// Rollback the Guide state `n` tokens (states).
-    /// Fails if `n` is greater than stored prior states.
+    /// Restores the state from `n` committed tokens ago.
     fn rollback_state(&mut self, n: usize) -> PyResult<()> {
-        if n == 0 {
-            return Ok(());
-        }
-        if n > self.get_allowed_rollback() {
+        self.inner
+            .rollback(n)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn accepts_tokens(&self, sequence: Vec<u32>) -> bool {
+        self.inner.accepts_tokens(&sequence)
+    }
+
+    /// Returns whether EOS has been committed.
+    fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Returns whether EOS is currently legal.
+    fn is_accepting(&self) -> bool {
+        self.inner.is_accepting()
+    }
+
+    /// Writes the exact LSB-first token mask into a writable CPU buffer.
+    fn write_mask_into(
+        &mut self,
+        data_ptr: usize,
+        numel: usize,
+        element_size: usize,
+    ) -> PyResult<()> {
+        let expected_elements = self.inner.mask_words();
+        if element_size != 4 {
             return Err(PyValueError::new_err(format!(
-                "Cannot roll back {n} step(s): only {available} states stored (max_rollback = {cap}). \
-                 You must advance through at least {n} state(s) before rolling back {n} step(s).",
-                 cap = self.state_cache.capacity(),
-                 available = self.get_allowed_rollback(),
+                "Invalid element size: got {element_size} bytes per element, expected 4 bytes (32-bit integer)."
             )));
         }
-        let mut new_state: u32 = self.state;
-        for _ in 0..n {
-            new_state = self
-                .state_cache
-                .pop_back()
-                .ok_or_else(|| PyValueError::new_err("Rollback history changed during rollback"))?;
-        }
-        self.state = new_state;
-        Ok(())
-    }
-
-    // Returns a boolean indicating if the sequence leads to a valid state in the DFA
-    fn accepts_tokens(&self, sequence: Vec<u32>) -> bool {
-        let mut state = self.state;
-        for t in sequence {
-            match self.index.get_next_state(state, t) {
-                Some(s) => state = s,
-                None => return false,
-            }
-        }
-        true
-    }
-
-    /// Checks if the automaton is in a final state.
-    fn is_finished(&self) -> bool {
-        self.index.is_final_state(self.state)
-    }
-
-    /// Write the mask of allowed tokens into the memory specified by data_ptr.
-    /// Size of the memory to be written to is indicated by `numel`, and `element_size`.
-    /// `element_size` must be 4.
-    ///
-    /// `data_ptr` should be the data ptr to a `torch.tensor`, or `np.ndarray`, `mx.array` or other
-    /// contiguous memory array.
-    fn write_mask_into(&self, data_ptr: usize, numel: usize, element_size: usize) -> PyResult<()> {
-        let expected_elements = self.index.0.vocab_size().div_ceil(32);
-        if element_size != 4 {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!(
-                    "Invalid element size: got {} bytes per element, expected 4 bytes (32-bit integer).",
-                    element_size
-                ),
-            ));
-        } else if data_ptr == 0 {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        if data_ptr == 0 {
+            return Err(PyValueError::new_err(
                 "Invalid data pointer: received a null pointer.",
             ));
-        } else if data_ptr % 4 != 0 {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Invalid data pointer alignment: pointer address {} is not a multiple of 4.",
-                data_ptr
+        }
+        if data_ptr % 4 != 0 {
+            return Err(PyValueError::new_err(format!(
+                "Invalid data pointer alignment: pointer address {data_ptr} is not a multiple of 4."
             )));
         }
         let byte_len = numel
@@ -246,55 +352,49 @@ impl PyGuide {
             ));
         }
         if numel < expected_elements {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!(
-                    "Invalid buffer size: got {} elements ({} bytes), expected {} elements ({} bytes). \
-                    Ensure that the mask tensor has shape (1, (vocab_size + 31) // 32) and uses 32-bit integers.",
-                    numel,
-                    byte_len,
-                    expected_elements,
-                    expected_bytes
-                )
-            ));
+            return Err(PyValueError::new_err(format!(
+                "Invalid buffer size: got {numel} elements ({byte_len} bytes), expected {expected_elements} elements ({expected_bytes} bytes). Ensure that the mask tensor has shape (1, (vocab_size + 31) // 32) and uses 32-bit integers."
+            )));
         }
-        // Safety: the caller provides a writable aligned buffer; range checks above prevent overflow.
+        // SAFETY: the caller owns a live writable CPU buffer aligned for u32 and spanning
+        // `numel` elements; the checks above prevent null, alignment, and range overflow.
         let slice = unsafe { std::slice::from_raw_parts_mut(data_ptr as *mut u32, numel) };
-        slice.fill(0);
-        if let Some(tokens) = self.index.0.allowed_tokens_iter(&self.state) {
-            for &token in tokens {
-                let token = usize::try_from(token)
-                    .map_err(|_| PyValueError::new_err("Token ID does not fit usize."))?;
-                let bucket = token / 32;
-                if bucket < slice.len() {
-                    slice[bucket] |= 1 << (token % 32);
-                }
-            }
-        }
-        Ok(())
+        self.inner
+            .fill_mask(slice)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    fn reset(&mut self) {
-        self.state = self.index.get_initial_state();
-        self.state_cache.clear();
+    fn reset(&mut self) -> PyResult<()> {
+        self.inner
+            .reset()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    /// Gets the debug string representation of the guide.
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        serde_pyobject::to_pyobject(py, self.inner.mask_stats())
+            .map(Bound::unbind)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn parser_stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        serde_pyobject::to_pyobject(py, &self.inner.parser_stats())
+            .map(Bound::unbind)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "Guide object with the state={:#?} and {:#?}",
-            self.state, self.index
+            "Guide(backend='{}', position={}, finished={})",
+            self.backend(),
+            self.position(),
+            self.is_finished()
         )
     }
 
-    /// Gets the string representation of the guide.
     fn __str__(&self) -> String {
-        format!(
-            "Guide object with the state={} and {}",
-            self.state, self.index.0
-        )
+        self.__repr__()
     }
 
-    /// Compares whether two guides are the same.
     fn __eq__(&self, other: &PyGuide) -> bool {
         self == other
     }
@@ -302,14 +402,37 @@ impl PyGuide {
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("Guide")?;
-            let binary_data = encode_object(self, ObjectKind::Guide, "Guide")?;
+            let payload = GuidePayload {
+                source: self.source.clone(),
+                max_rollback: self.max_rollback,
+                committed_token_ids: self.inner.committed_token_ids().to_vec(),
+                finished: self.inner.is_finished(),
+            };
+            let binary_data = encode_object(&payload, ObjectKind::Guide, "Guide")?;
             Ok((cls.getattr("from_binary")?.unbind(), (binary_data,)))
         })
     }
 
     #[staticmethod]
     fn from_binary(binary_data: Vec<u8>) -> PyResult<Self> {
-        decode_object(&binary_data, ObjectKind::Guide, "Guide")
+        let payload = decode_object(&binary_data, ObjectKind::Guide, "Guide")?;
+        Self::rebuild(payload)
+    }
+}
+
+fn backend_code(backend: BackendKind) -> u8 {
+    match backend {
+        BackendKind::WholeDfa => 1,
+        BackendKind::Lalr => 2,
+        BackendKind::Earley => 3,
+    }
+}
+
+fn backend_name(backend: BackendKind) -> &'static str {
+    match backend {
+        BackendKind::WholeDfa => "whole_dfa",
+        BackendKind::Lalr => "lalr",
+        BackendKind::Earley => "earley",
     }
 }
 
@@ -599,11 +722,7 @@ impl PyCompiledSchema {
     /// Returns the selected backend name.
     #[getter]
     fn backend(&self) -> &'static str {
-        match self.compiled.report.selected_backend {
-            crate::engine::BackendKind::WholeDfa => "whole_dfa",
-            crate::engine::BackendKind::Lalr => "lalr",
-            crate::engine::BackendKind::Earley => "earley",
-        }
+        backend_name(self.compiled.report.selected_backend)
     }
 
     /// Creates an incremental byte recognizer for the selected backend.
@@ -621,12 +740,7 @@ impl PyCompiledSchema {
     /// Creates a guide when the selected backend is available.
     #[pyo3(signature = (max_rollback=32))]
     fn guide(&self, max_rollback: usize) -> PyResult<PyGuide> {
-        let index = self
-            .compiled
-            .index()
-            .map_err(|error| PyValueError::new_err(error.to_string()))?
-            .clone();
-        Ok(PyGuide::__new__(PyIndex(Arc::new(index)), max_rollback))
+        PyGuide::from_compiled(self, max_rollback)
     }
 
     fn __repr__(&self) -> String {

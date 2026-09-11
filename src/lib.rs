@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! # OC-Earley
 //!
 //! `oc_earley` provides exact constrained-decoding primitives.
@@ -95,9 +98,9 @@ pub mod vocabulary;
 
 pub use earley::{CompiledEarley, EarleyRecognizer, EarleyStats};
 pub use engine::{
-    Advance, BackendKind, BackendPolicy, CompileProfile, CompiledBackend, CompiledSchema,
-    Recognizer, RecognizerCheckpoint, RecognizerState, RecognizerStats, SemanticContract,
-    TierReport,
+    Advance, BackendKind, BackendPolicy, CompileProfile, CompiledBackend, CompiledSchema, Guide,
+    MaskStats, Recognizer, RecognizerCheckpoint, RecognizerState, RecognizerStats,
+    SemanticContract, TierReport,
 };
 pub use error::{CompileError, CompileStage, Error, Result, RuntimeError, RuntimeResource};
 pub use schema::{CompileLimits, CompileOptions, RuntimeLimits};
