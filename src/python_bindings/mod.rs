@@ -15,6 +15,78 @@ use tokenizers::FromPretrainedParameters;
 use crate::index::Index;
 use crate::json_schema;
 use crate::prelude::*;
+use crate::schema::COMPILED_FORMAT_VERSION;
+
+const SERIAL_MAGIC: &[u8; 8] = b"OCEARLEY";
+const SERIAL_HEADER_LEN: usize = 13;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum ObjectKind {
+    Index = 1,
+    Guide = 2,
+    Vocabulary = 3,
+    CompiledSchema = 4,
+}
+
+fn encode_object<T: Encode>(value: &T, kind: ObjectKind, label: &str) -> PyResult<Vec<u8>> {
+    let payload = bincode::encode_to_vec(value, config::standard()).map_err(|error| {
+        PyValueError::new_err(format!("Serialization of {label} failed: {error}"))
+    })?;
+    let capacity = SERIAL_HEADER_LEN
+        .checked_add(payload.len())
+        .ok_or_else(|| PyValueError::new_err(format!("Serialization of {label} is too large")))?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(capacity)
+        .map_err(|_| PyValueError::new_err(format!("Serialization of {label} is too large")))?;
+    output.extend_from_slice(SERIAL_MAGIC);
+    output.extend_from_slice(&COMPILED_FORMAT_VERSION.to_le_bytes());
+    output.push(kind as u8);
+    output.extend_from_slice(&payload);
+    Ok(output)
+}
+
+fn decode_object<T: Decode<()>>(
+    binary_data: &[u8],
+    expected_kind: ObjectKind,
+    label: &str,
+) -> PyResult<T> {
+    if binary_data.len() < SERIAL_HEADER_LEN {
+        return Err(PyValueError::new_err(format!(
+            "Deserialization of {label} failed: truncated header"
+        )));
+    }
+    if &binary_data[..SERIAL_MAGIC.len()] != SERIAL_MAGIC {
+        return Err(PyValueError::new_err(format!(
+            "Deserialization of {label} failed: invalid magic bytes"
+        )));
+    }
+    let mut version_bytes = [0; 4];
+    version_bytes.copy_from_slice(&binary_data[8..12]);
+    let version = u32::from_le_bytes(version_bytes);
+    if version != COMPILED_FORMAT_VERSION {
+        return Err(PyValueError::new_err(format!(
+            "compiled format version {version} is unsupported; expected {COMPILED_FORMAT_VERSION}"
+        )));
+    }
+    if binary_data[12] != expected_kind as u8 {
+        return Err(PyValueError::new_err(format!(
+            "Deserialization of {label} failed: wrong object kind"
+        )));
+    }
+    let payload = &binary_data[SERIAL_HEADER_LEN..];
+    let (value, consumed): (T, usize) = bincode::decode_from_slice(payload, config::standard())
+        .map_err(|error| {
+            PyValueError::new_err(format!("Deserialization of {label} failed: {error}"))
+        })?;
+    if consumed != payload.len() {
+        return Err(PyValueError::new_err(format!(
+            "Deserialization of {label} failed: trailing data"
+        )));
+    }
+    Ok(value)
+}
 
 macro_rules! type_name {
     ($obj:expr) => {
@@ -111,8 +183,10 @@ impl PyGuide {
         }
         let mut new_state: u32 = self.state;
         for _ in 0..n {
-            // unwrap is safe because length is checked above
-            new_state = self.state_cache.pop_back().unwrap();
+            new_state = self
+                .state_cache
+                .pop_back()
+                .ok_or_else(|| PyValueError::new_err("Rollback history changed during rollback"))?;
         }
         self.state = new_state;
         Ok(())
@@ -159,27 +233,40 @@ impl PyGuide {
                 "Invalid data pointer alignment: pointer address {} is not a multiple of 4.",
                 data_ptr
             )));
-        } else if numel < expected_elements {
+        }
+        let byte_len = numel
+            .checked_mul(element_size)
+            .ok_or_else(|| PyValueError::new_err("Invalid buffer size: byte length overflowed."))?;
+        let expected_bytes = expected_elements.checked_mul(4).ok_or_else(|| {
+            PyValueError::new_err("Invalid buffer size: expected byte length overflowed.")
+        })?;
+        if byte_len > isize::MAX as usize || data_ptr.checked_add(byte_len).is_none() {
+            return Err(PyValueError::new_err(
+                "Invalid buffer size: address range overflowed.",
+            ));
+        }
+        if numel < expected_elements {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 format!(
                     "Invalid buffer size: got {} elements ({} bytes), expected {} elements ({} bytes). \
                     Ensure that the mask tensor has shape (1, (vocab_size + 31) // 32) and uses 32-bit integers.",
                     numel,
-                    numel * element_size,
+                    byte_len,
                     expected_elements,
-                    expected_elements * 4
+                    expected_bytes
                 )
             ));
         }
-        unsafe {
-            std::ptr::write_bytes(data_ptr as *mut u8, 0, numel * 4);
-        }
+        // Safety: the caller provides a writable aligned buffer; range checks above prevent overflow.
+        let slice = unsafe { std::slice::from_raw_parts_mut(data_ptr as *mut u32, numel) };
+        slice.fill(0);
         if let Some(tokens) = self.index.0.allowed_tokens_iter(&self.state) {
-            let slice = unsafe { std::slice::from_raw_parts_mut(data_ptr as *mut u32, numel) };
             for &token in tokens {
-                let bucket = (token as usize) / 32;
+                let token = usize::try_from(token)
+                    .map_err(|_| PyValueError::new_err("Token ID does not fit usize."))?;
+                let bucket = token / 32;
                 if bucket < slice.len() {
-                    slice[bucket] |= 1 << ((token as usize) % 32);
+                    slice[bucket] |= 1 << (token % 32);
                 }
             }
         }
@@ -215,21 +302,14 @@ impl PyGuide {
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("Guide")?;
-            let binary_data: Vec<u8> =
-                bincode::encode_to_vec(self, config::standard()).map_err(|e| {
-                    PyErr::new::<PyValueError, _>(format!("Serialization of Guide failed: {}", e))
-                })?;
+            let binary_data = encode_object(self, ObjectKind::Guide, "Guide")?;
             Ok((cls.getattr("from_binary")?.unbind(), (binary_data,)))
         })
     }
 
     #[staticmethod]
     fn from_binary(binary_data: Vec<u8>) -> PyResult<Self> {
-        let (guide, _): (PyGuide, usize) =
-            bincode::decode_from_slice(&binary_data[..], config::standard()).map_err(|e| {
-                PyErr::new::<PyValueError, _>(format!("Deserialization of Guide failed: {}", e))
-            })?;
-        Ok(guide)
+        decode_object(&binary_data, ObjectKind::Guide, "Guide")
     }
 }
 
@@ -303,20 +383,14 @@ impl PyIndex {
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("Index")?;
-            let binary_data: Vec<u8> = bincode::encode_to_vec(&self.0, config::standard())
-                .map_err(|e| {
-                    PyErr::new::<PyValueError, _>(format!("Serialization of Index failed: {}", e))
-                })?;
+            let binary_data = encode_object(&self.0, ObjectKind::Index, "Index")?;
             Ok((cls.getattr("from_binary")?.unbind(), (binary_data,)))
         })
     }
 
     #[staticmethod]
     fn from_binary(binary_data: Vec<u8>) -> PyResult<Self> {
-        let (index, _): (Index, usize) =
-            bincode::decode_from_slice(&binary_data[..], config::standard()).map_err(|e| {
-                PyErr::new::<PyValueError, _>(format!("Deserialization of Index failed: {}", e))
-            })?;
+        let index = decode_object(&binary_data, ObjectKind::Index, "Index")?;
         Ok(PyIndex(Arc::new(index)))
     }
 }
@@ -448,28 +522,140 @@ impl PyVocabulary {
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("Vocabulary")?;
-            let binary_data: Vec<u8> =
-                bincode::encode_to_vec(self, config::standard()).map_err(|e| {
-                    PyErr::new::<PyValueError, _>(format!(
-                        "Serialization of Vocabulary failed: {}",
-                        e
-                    ))
-                })?;
+            let binary_data = encode_object(self, ObjectKind::Vocabulary, "Vocabulary")?;
             Ok((cls.getattr("from_binary")?.unbind(), (binary_data,)))
         })
     }
 
     #[staticmethod]
     fn from_binary(binary_data: Vec<u8>) -> PyResult<Self> {
-        let (guide, _): (PyVocabulary, usize) =
-            bincode::decode_from_slice(&binary_data[..], config::standard()).map_err(|e| {
-                PyErr::new::<PyValueError, _>(format!(
-                    "Deserialization of Vocabulary failed: {}",
-                    e
-                ))
-            })?;
-        Ok(guide)
+        decode_object(&binary_data, ObjectKind::Vocabulary, "Vocabulary")
     }
+}
+
+#[derive(Encode, Decode)]
+struct CompiledSchemaPayload {
+    schema: Vec<u8>,
+    vocabulary: Vocabulary,
+}
+
+/// A schema analysis and its selected runtime backend.
+#[pyclass(
+    name = "CompiledSchema",
+    module = "oc_earley",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PyCompiledSchema {
+    compiled: CompiledSchema,
+    schema: Vec<u8>,
+    vocabulary: Vocabulary,
+}
+
+#[pymethods]
+impl PyCompiledSchema {
+    /// Compiles a JSON Schema under the strict K1 profile.
+    #[staticmethod]
+    fn from_json_schema(
+        py: Python<'_>,
+        schema: &Bound<'_, PyAny>,
+        vocabulary: &PyVocabulary,
+    ) -> PyResult<Self> {
+        let schema = schema_bytes(schema)?;
+        let inner_vocabulary = vocabulary.0.clone();
+        let compiled = py.detach(|| {
+            CompiledSchema::compile(&schema, &inner_vocabulary, &CompileOptions::default())
+        })?;
+        Ok(Self {
+            compiled,
+            schema,
+            vocabulary: inner_vocabulary,
+        })
+    }
+
+    /// Returns the deterministic tier report as Python values.
+    fn tier_report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        serde_pyobject::to_pyobject(py, &self.compiled.report)
+            .map(Bound::unbind)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Returns the selected backend name.
+    #[getter]
+    fn backend(&self) -> &'static str {
+        match self.compiled.report.selected_backend {
+            crate::engine::BackendKind::WholeDfa => "whole_dfa",
+            crate::engine::BackendKind::StructuralPending => "structural_pending",
+        }
+    }
+
+    /// Creates a guide when the selected backend is available.
+    #[pyo3(signature = (max_rollback=32))]
+    fn guide(&self, max_rollback: usize) -> PyResult<PyGuide> {
+        let index = self
+            .compiled
+            .index()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?
+            .clone();
+        Ok(PyGuide::__new__(PyIndex(Arc::new(index)), max_rollback))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CompiledSchema(backend='{}', schema_nodes={})",
+            self.backend(),
+            self.compiled.report.schema_nodes
+        )
+    }
+
+    fn __eq__(&self, other: &PyCompiledSchema) -> bool {
+        self == other
+    }
+
+    fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
+        Python::attach(|py| {
+            let cls = PyModule::import(py, "oc_earley")?.getattr("CompiledSchema")?;
+            let payload = CompiledSchemaPayload {
+                schema: self.schema.clone(),
+                vocabulary: self.vocabulary.clone(),
+            };
+            let binary_data =
+                encode_object(&payload, ObjectKind::CompiledSchema, "CompiledSchema")?;
+            Ok((cls.getattr("from_binary")?.unbind(), (binary_data,)))
+        })
+    }
+
+    #[staticmethod]
+    fn from_binary(py: Python<'_>, binary_data: Vec<u8>) -> PyResult<Self> {
+        let payload: CompiledSchemaPayload =
+            decode_object(&binary_data, ObjectKind::CompiledSchema, "CompiledSchema")?;
+        let compiled = py.detach(|| {
+            CompiledSchema::compile(
+                &payload.schema,
+                &payload.vocabulary,
+                &CompileOptions::default(),
+            )
+        })?;
+        Ok(Self {
+            compiled,
+            schema: payload.schema,
+            vocabulary: payload.vocabulary,
+        })
+    }
+}
+
+fn schema_bytes(schema: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(schema) = schema.extract::<String>() {
+        return Ok(schema.into_bytes());
+    }
+    if let Ok(schema) = schema.extract::<Vec<u8>>() {
+        return Ok(schema);
+    }
+    let value: serde_json::Value = serde_pyobject::from_pyobject(schema.clone())
+        .map_err(|error| PyValueError::new_err(format!("Invalid schema value: {error}")))?;
+    serde_json::to_vec(&value)
+        .map_err(|error| PyValueError::new_err(format!("Invalid schema value: {error}")))
 }
 
 /// Creates regex string from JSON schema with optional whitespace pattern.
@@ -527,6 +713,7 @@ fn oc_earley(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIndex>()?;
     m.add_class::<PyVocabulary>()?;
     m.add_class::<PyGuide>()?;
+    m.add_class::<PyCompiledSchema>()?;
     register_child_module(m)?;
 
     Ok(())
