@@ -9,6 +9,8 @@
 
 Exact recursive JSON Schema recognition and token masking for Rust and Python.
 
+[![PyPI](https://img.shields.io/pypi/v/oc-earley.svg)](https://pypi.org/project/oc-earley/)
+[![crates.io](https://img.shields.io/crates/v/oc-earley.svg)](https://crates.io/crates/oc-earley)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>
