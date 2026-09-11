@@ -86,9 +86,10 @@ pub mod index;
 pub mod json_schema;
 pub mod prelude;
 pub mod primitives;
+pub mod schema;
 pub mod vocabulary;
 
-pub use error::{Error, Result};
+pub use error::{CompileError, CompileStage, Error, Result};
 
 #[cfg(feature = "python-bindings")]
 mod python_bindings;

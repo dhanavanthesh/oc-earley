@@ -2,10 +2,14 @@
 
 use thiserror::Error;
 
+use crate::schema::{DiagnosticLocation, SchemaPointer};
+
 pub type Result<T, E = crate::Error> = std::result::Result<T, E>;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error(transparent)]
+    Compile(#[from] CompileError),
     // Index Errors
     #[error("Failed to build DFA {0}")]
     IndexDfaError(#[from] Box<regex_automata::dfa::dense::BuildError>),
@@ -77,6 +81,89 @@ pub enum Error {
         error_state: u32,
         missing_tokens: Vec<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompileStage {
+    Parse,
+    SchemaIndex,
+    ReferenceResolution,
+    Normalization,
+    Lowering,
+    GrammarReduction,
+    SccAnalysis,
+    RegularCertification,
+    NfaConstruction,
+    DfaDeterminization,
+    VocabularyProjection,
+}
+
+impl std::fmt::Display for CompileStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum CompileError {
+    #[error("invalid JSON: {message}")]
+    InvalidJson { message: String },
+    #[error("duplicate schema key `{key}` at {location}")]
+    DuplicateSchemaKey {
+        location: DiagnosticLocation,
+        key: String,
+    },
+    #[error("unsupported dialect `{found}`")]
+    UnsupportedDialect { found: String },
+    #[error("invalid value for `{keyword}` at {location}: {reason}")]
+    InvalidKeywordValue {
+        location: DiagnosticLocation,
+        keyword: String,
+        reason: String,
+    },
+    #[error("unsupported keyword `{keyword}` at {location}")]
+    UnsupportedKeyword {
+        location: DiagnosticLocation,
+        keyword: String,
+    },
+    #[error("unsupported keyword combination at {location}: {reason}")]
+    UnsupportedCombination {
+        location: DiagnosticLocation,
+        reason: String,
+    },
+    #[error("remote reference is unsupported at {location}: {reference}")]
+    RemoteReferenceUnsupported {
+        location: DiagnosticLocation,
+        reference: String,
+    },
+    #[error("reference target not found at {location}: {reference}")]
+    ReferenceNotFound {
+        location: DiagnosticLocation,
+        reference: String,
+    },
+    #[error("invalid JSON Pointer `{pointer}` at {location}: {reason}")]
+    InvalidJsonPointer {
+        location: DiagnosticLocation,
+        pointer: String,
+        reason: String,
+    },
+    #[error("resource limit exceeded during {stage}: {observed} > {limit}")]
+    ResourceLimitExceeded {
+        stage: CompileStage,
+        observed: usize,
+        limit: usize,
+    },
+    #[error("a structural backend is required at {location}")]
+    StructuralBackendRequired { location: DiagnosticLocation },
+    #[error("compiled format version {found} is unsupported; expected {expected}")]
+    IncompatibleCompiledFormat { found: u32, expected: u32 },
+    #[error("regular automaton construction failed at {pointer}: {message}")]
+    AutomatonBuild {
+        pointer: SchemaPointer,
+        message: String,
+    },
+    #[error("internal invariant failed: {message}")]
+    InternalInvariant { message: &'static str },
 }
 
 impl Error {
