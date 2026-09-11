@@ -362,7 +362,8 @@ fn lower_array(
         });
     }
 
-    let position_count = effective_max.unwrap_or(array.prefix_items.len());
+    let position_count =
+        effective_max.unwrap_or_else(|| array.prefix_items.len().max(array.min_items).max(1));
     let state_count = position_count
         .checked_add(1)
         .ok_or(CompileError::ResourceLimitExceeded {
@@ -2582,6 +2583,32 @@ mod tests {
         for invalid in ["[]", "[2]", "[1,3]", "[1,2,2,2]"] {
             assert!(!dfa.accepts(invalid.as_bytes()), "must reject {invalid}");
         }
+    }
+
+    #[test]
+    fn byte_dfa_unbounded_items_require_commas_and_honor_minimum() {
+        let dfa = byte_dfa(r#"{"type":"array","items":{"const":1},"minItems":2}"#);
+        for valid in ["[1,1]", "[1,1,1]", "[1,1,1,1]"] {
+            assert!(dfa.accepts(valid.as_bytes()), "must accept {valid}");
+        }
+        for invalid in ["[]", "[1]", "[11]", "[1 1]", "[1,,1]"] {
+            assert!(!dfa.accepts(invalid.as_bytes()), "must reject {invalid}");
+        }
+    }
+
+    #[test]
+    fn byte_dfa_accepts_deeply_nested_unbounded_items() {
+        let schema = r#"{
+            "type":"array",
+            "items":{"type":"array","items":{"type":"array","items":{
+                "type":"array","items":{"type":"number"}
+            }}}
+        }"#;
+        let dfa = byte_dfa(schema);
+
+        assert!(dfa.accepts(br#"[[[[1]],[[2],[3]]],[[[4],[5],[6]]]]"#));
+        assert!(!dfa.accepts(br#"[[[["1"]]]]"#));
+        assert!(!dfa.accepts(br#"[[[1],[2],[3]]]"#));
     }
 
     #[test]
