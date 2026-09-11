@@ -3,6 +3,7 @@ use std::fmt;
 
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Map, Number, Value};
 
 use crate::error::{CompileError, CompileStage};
@@ -188,89 +189,78 @@ impl SchemaArena {
     }
 }
 
-#[derive(Debug)]
-struct UniqueValue(Value);
+struct ObjectKeyScan;
 
-impl<'de> Deserialize<'de> for UniqueValue {
+impl<'de> Deserialize<'de> for ObjectKeyScan {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(UniqueValueVisitor)
+        deserializer.deserialize_map(ObjectKeyVisitor)
     }
 }
 
-struct UniqueValueVisitor;
+struct ObjectKeyVisitor;
 
-impl<'de> Visitor<'de> for UniqueValueVisitor {
-    type Value = UniqueValue;
+impl<'de> Visitor<'de> for ObjectKeyVisitor {
+    type Value = ObjectKeyScan;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Bool(value)))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Number(Number::from(value))))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Number(Number::from(value))))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Number::from_f64(value)
-            .map(Value::Number)
-            .map(UniqueValue)
-            .ok_or_else(|| E::custom("non-finite JSON number"))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::String(value.to_owned())))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::String(value)))
-    }
-
-    fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Null))
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Null))
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut values = Vec::new();
-        while let Some(UniqueValue(value)) = sequence.next_element()? {
-            values.push(value);
-        }
-        Ok(UniqueValue(Value::Array(values)))
+        formatter.write_str("a JSON object")
     }
 
     fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut values = Map::new();
+        let mut keys = BTreeSet::new();
         while let Some(key) = object.next_key::<String>()? {
-            if values.contains_key(&key) {
+            if !keys.insert(key.clone()) {
                 return Err(de::Error::custom(format!("__OCE_DUPLICATE__{key}")));
             }
-            let UniqueValue(value) = object.next_value()?;
-            values.insert(key, value);
+            let value = object.next_value::<Box<RawValue>>()?;
+            scan_nested_keys(value.get()).map_err(de::Error::custom)?;
         }
-        Ok(UniqueValue(Value::Object(values)))
+        Ok(ObjectKeyScan)
+    }
+}
+
+struct ArrayKeyScan;
+
+impl<'de> Deserialize<'de> for ArrayKeyScan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ArrayKeyVisitor)
+    }
+}
+
+struct ArrayKeyVisitor;
+
+impl<'de> Visitor<'de> for ArrayKeyVisitor {
+    type Value = ArrayKeyScan;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(value) = sequence.next_element::<Box<RawValue>>()? {
+            scan_nested_keys(value.get()).map_err(de::Error::custom)?;
+        }
+        Ok(ArrayKeyScan)
+    }
+}
+
+fn scan_nested_keys(value: &str) -> Result<(), serde_json::Error> {
+    match value.trim_start().as_bytes().first() {
+        Some(b'{') => serde_json::from_str::<ObjectKeyScan>(value).map(|_| ()),
+        Some(b'[') => serde_json::from_str::<ArrayKeyScan>(value).map(|_| ()),
+        _ => Ok(()),
     }
 }
 
@@ -284,20 +274,31 @@ pub fn parse_and_normalize(
         options.limits.max_schema_bytes,
     )?;
 
-    let root = match serde_json::from_slice::<UniqueValue>(schema) {
-        Ok(UniqueValue(value)) => value,
-        Err(error) => {
-            let message = error.to_string();
-            if let Some(rest) = message.split("__OCE_DUPLICATE__").nth(1) {
-                let key = rest.split(" at line ").next().unwrap_or(rest).to_owned();
-                return Err(CompileError::DuplicateSchemaKey {
-                    location: root_location(),
-                    key,
-                });
-            }
-            return Err(CompileError::InvalidJson { message });
+    let schema_text = std::str::from_utf8(schema).map_err(|error| CompileError::InvalidJson {
+        message: error.to_string(),
+    })?;
+    serde_json::from_str::<Box<RawValue>>(schema_text).map_err(|error| {
+        CompileError::InvalidJson {
+            message: error.to_string(),
         }
-    };
+    })?;
+    if let Err(error) = scan_nested_keys(schema_text) {
+        let message = error.to_string();
+        if let Some(rest) = message.split("__OCE_DUPLICATE__").nth(1) {
+            let key = rest.split(" at line ").next().unwrap_or(rest).to_owned();
+            return Err(CompileError::DuplicateSchemaKey {
+                location: root_location(),
+                key,
+            });
+        }
+        return Err(CompileError::InvalidJson { message });
+    }
+    let root = serde_json::from_str::<Value>(schema_text).map_err(|error| {
+        CompileError::UnsupportedCombination {
+            location: root_location(),
+            reason: format!("schema cannot be represented exactly: {error}"),
+        }
+    })?;
 
     if !is_schema(&root) {
         return Err(invalid_value(
@@ -372,7 +373,14 @@ fn index_schema_locations(
         }
         enforce_limit(
             CompileStage::SchemaIndex,
-            raw_nodes.len() + 1,
+            raw_nodes
+                .len()
+                .checked_add(1)
+                .ok_or(CompileError::ResourceLimitExceeded {
+                    stage: CompileStage::SchemaIndex,
+                    observed: usize::MAX,
+                    limit: limits.max_schema_nodes,
+                })?,
             limits.max_schema_nodes,
         )?;
         let mut children = schema_children(&pointer, &value);
@@ -513,9 +521,18 @@ fn normalize_node(
                 reference: reference.to_owned(),
             }
         })?;
+        let edge_count =
+            reference_edges
+                .len()
+                .checked_add(1)
+                .ok_or(CompileError::ResourceLimitExceeded {
+                    stage: CompileStage::ReferenceResolution,
+                    observed: usize::MAX,
+                    limit: limits.max_ref_edges,
+                })?;
         enforce_limit(
             CompileStage::ReferenceResolution,
-            reference_edges.len() + 1,
+            edge_count,
             limits.max_ref_edges,
         )?;
         reference_edges.push(ReferenceEdge {
@@ -543,6 +560,9 @@ fn normalize_node(
                 return Ok(NormalizedSchema::Never);
             }
         }
+        if !value_matches_string_keywords(pointer, object, constant)? {
+            return Ok(NormalizedSchema::Never);
+        }
         return Ok(NormalizedSchema::Const(canonical_value(constant)?));
     }
     if let Some(values) = object.get("enum") {
@@ -558,11 +578,21 @@ fn normalize_node(
         if values.is_empty() {
             return Err(invalid_value(pointer, "enum", "enum must not be empty"));
         }
+        let mut seen = BTreeSet::new();
         let mut canonical = BTreeMap::new();
         for value in values {
-            if declared_type.is_none_or(|kind| value_matches_type(value, kind)) {
-                let value = canonical_value(value)?;
-                canonical.entry(value.json.clone()).or_insert(value);
+            let canonical_value = canonical_value(value)?;
+            if !seen.insert(canonical_value.json.clone()) {
+                return Err(invalid_value(
+                    pointer,
+                    "enum",
+                    "enum entries must be unique",
+                ));
+            }
+            if declared_type.is_none_or(|kind| value_matches_type(value, kind))
+                && value_matches_string_keywords(pointer, object, value)?
+            {
+                canonical.insert(canonical_value.json.clone(), canonical_value);
             }
         }
         return if canonical.is_empty() {
@@ -573,22 +603,32 @@ fn normalize_node(
     }
 
     if has_object_keywords(object) {
-        if declared_type != Some(JsonType::Object) {
+        if declared_type == Some(JsonType::Object) {
+            return normalize_object(pointer, object, pointer_to_id);
+        }
+        if declared_type.is_none() {
             return Err(unsupported_combination(
                 pointer,
                 "object keywords require an explicit object type in K1",
             ));
         }
-        return normalize_object(pointer, object, pointer_to_id);
     }
     if has_array_keywords(object) {
-        if declared_type != Some(JsonType::Array) {
+        if declared_type == Some(JsonType::Array) {
+            return normalize_array(pointer, object, pointer_to_id);
+        }
+        if declared_type.is_none() {
             return Err(unsupported_combination(
                 pointer,
                 "array keywords require an explicit array type in K1",
             ));
         }
-        return normalize_array(pointer, object, pointer_to_id);
+    }
+    if has_string_keywords(object) && declared_type.is_none() {
+        return Err(unsupported_combination(
+            pointer,
+            "string constraints without a finite value or explicit string type require a union",
+        ));
     }
 
     match declared_type {
@@ -609,7 +649,6 @@ fn validate_keywords(
 ) -> Result<(), CompileError> {
     const SUPPORTED: &[&str] = &[
         "$schema",
-        "$id",
         "$defs",
         "$ref",
         "$comment",
@@ -785,6 +824,20 @@ fn normalize_string(
         min_length,
         max_length,
     }))
+}
+
+fn value_matches_string_keywords(
+    pointer: &SchemaPointer,
+    object: &Map<String, Value>,
+    value: &Value,
+) -> Result<bool, CompileError> {
+    let Some(value) = value.as_str() else {
+        return Ok(true);
+    };
+    let min_length = optional_usize(pointer, object, "minLength")?.unwrap_or(0);
+    let max_length = optional_usize(pointer, object, "maxLength")?;
+    let length = value.chars().count();
+    Ok(length >= min_length && max_length.is_none_or(|maximum| length <= maximum))
 }
 
 fn normalize_array(
@@ -1024,7 +1077,7 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), CompileErro
     match value {
         Value::Null => output.push_str("null"),
         Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => output.push_str(&value.to_string()),
+        Value::Number(value) => output.push_str(&canonical_number(value)?),
         Value::String(value) => {
             output.push_str(&serde_json::to_string(value).map_err(|error| {
                 CompileError::InvalidJson {
@@ -1064,13 +1117,168 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), CompileErro
     Ok(())
 }
 
+fn canonical_number(value: &Number) -> Result<String, CompileError> {
+    let parts = decimal_parts(value)?;
+    if parts.digits == "0" {
+        return Ok("0".to_owned());
+    }
+
+    let scientific_exponent = parts
+        .scale
+        .checked_add(parts.digits.len() as i128 - 1)
+        .ok_or_else(number_range_error)?;
+    let mut scientific = String::new();
+    if parts.negative {
+        scientific.push('-');
+    }
+    scientific.push(parts.digits.as_bytes()[0] as char);
+    if parts.digits.len() > 1 {
+        scientific.push('.');
+        scientific.push_str(&parts.digits[1..]);
+    }
+    if scientific_exponent != 0 {
+        scientific.push('e');
+        scientific.push_str(&scientific_exponent.to_string());
+    }
+
+    let plain_length = plain_number_length(&parts)?;
+    if plain_length > scientific.len() {
+        return Ok(scientific);
+    }
+    render_plain_number(&parts, plain_length)
+}
+
+struct DecimalParts {
+    negative: bool,
+    digits: String,
+    scale: i128,
+}
+
+fn decimal_parts(value: &Number) -> Result<DecimalParts, CompileError> {
+    let text = value.to_string();
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (
+            mantissa,
+            exponent.parse::<i128>().map_err(|_| number_range_error())?,
+        ),
+        None => (text.as_str(), 0),
+    };
+    let (negative, mantissa) = mantissa
+        .strip_prefix('-')
+        .map_or((false, mantissa), |mantissa| (true, mantissa));
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let capacity = integer
+        .len()
+        .checked_add(fraction.len())
+        .ok_or_else(number_range_error)?;
+    let mut digits = String::new();
+    digits
+        .try_reserve_exact(capacity)
+        .map_err(|_| number_range_error())?;
+    digits.push_str(integer);
+    digits.push_str(fraction);
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(DecimalParts {
+            negative: false,
+            digits: "0".to_owned(),
+            scale: 0,
+        });
+    }
+    let trailing = digits.len() - digits.trim_end_matches('0').len();
+    let significant = &digits[..digits.len() - trailing];
+    let fraction_length = i128::try_from(fraction.len()).map_err(|_| number_range_error())?;
+    let trailing = i128::try_from(trailing).map_err(|_| number_range_error())?;
+    let scale = exponent
+        .checked_sub(fraction_length)
+        .and_then(|scale| scale.checked_add(trailing))
+        .ok_or_else(number_range_error)?;
+    Ok(DecimalParts {
+        negative,
+        digits: significant.to_owned(),
+        scale,
+    })
+}
+
+fn plain_number_length(parts: &DecimalParts) -> Result<usize, CompileError> {
+    let sign = usize::from(parts.negative);
+    if parts.scale >= 0 {
+        let zeroes = usize::try_from(parts.scale).map_err(|_| number_range_error())?;
+        return sign
+            .checked_add(parts.digits.len())
+            .and_then(|length| length.checked_add(zeroes))
+            .ok_or_else(number_range_error);
+    }
+    let decimal_places = parts
+        .scale
+        .checked_neg()
+        .and_then(|places| usize::try_from(places).ok())
+        .ok_or_else(number_range_error)?;
+    if decimal_places < parts.digits.len() {
+        sign.checked_add(parts.digits.len())
+            .and_then(|length| length.checked_add(1))
+            .ok_or_else(number_range_error)
+    } else {
+        sign.checked_add(2)
+            .and_then(|length| length.checked_add(decimal_places - parts.digits.len()))
+            .and_then(|length| length.checked_add(parts.digits.len()))
+            .ok_or_else(number_range_error)
+    }
+}
+
+fn render_plain_number(parts: &DecimalParts, length: usize) -> Result<String, CompileError> {
+    let mut output = String::new();
+    output
+        .try_reserve_exact(length)
+        .map_err(|_| number_range_error())?;
+    if parts.negative {
+        output.push('-');
+    }
+    if parts.scale >= 0 {
+        output.push_str(&parts.digits);
+        let zeroes = usize::try_from(parts.scale).map_err(|_| number_range_error())?;
+        output.extend(std::iter::repeat_n('0', zeroes));
+        return Ok(output);
+    }
+    let decimal_places = parts
+        .scale
+        .checked_neg()
+        .and_then(|places| usize::try_from(places).ok())
+        .ok_or_else(number_range_error)?;
+    if decimal_places < parts.digits.len() {
+        let point = parts.digits.len() - decimal_places;
+        output.push_str(&parts.digits[..point]);
+        output.push('.');
+        output.push_str(&parts.digits[point..]);
+    } else {
+        output.push_str("0.");
+        output.extend(std::iter::repeat_n(
+            '0',
+            decimal_places - parts.digits.len(),
+        ));
+        output.push_str(&parts.digits);
+    }
+    Ok(output)
+}
+
+fn number_range_error() -> CompileError {
+    CompileError::UnsupportedCombination {
+        location: root_location(),
+        reason: "number exponent is outside the supported canonical range".to_owned(),
+    }
+}
+
+fn number_is_integer(value: &Number) -> bool {
+    decimal_parts(value).is_ok_and(|parts| parts.scale >= 0)
+}
+
 fn value_matches_type(value: &Value, kind: JsonType) -> bool {
     match kind {
         JsonType::Null => value.is_null(),
         JsonType::Boolean => value.is_boolean(),
         JsonType::String => value.is_string(),
         JsonType::Number => value.is_number(),
-        JsonType::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
+        JsonType::Integer => value.as_number().is_some_and(number_is_integer),
         JsonType::Array => value.is_array(),
         JsonType::Object => value.is_object(),
     }
@@ -1108,6 +1316,12 @@ fn has_structural_keywords(object: &Map<String, Value>) -> bool {
     has_object_keywords(object) || has_array_keywords(object)
 }
 
+fn has_string_keywords(object: &Map<String, Value>) -> bool {
+    ["minLength", "maxLength"]
+        .iter()
+        .any(|key| object.contains_key(*key))
+}
+
 fn has_object_keywords(object: &Map<String, Value>) -> bool {
     ["properties", "required", "additionalProperties"]
         .iter()
@@ -1124,7 +1338,6 @@ fn is_annotation(keyword: &str) -> bool {
     matches!(
         keyword,
         "$schema"
-            | "$id"
             | "$defs"
             | "$comment"
             | "title"
@@ -1288,6 +1501,117 @@ mod tests {
         assert_eq!(
             canonical_value(&value).unwrap().json,
             r#"{"a":[true,null],"z":1}"#
+        );
+    }
+
+    #[test]
+    fn finite_values_honor_adjacent_string_constraints() {
+        let arena = parse(r#"{"const":"é","minLength":1,"maxLength":1}"#).unwrap();
+        assert!(matches!(arena.nodes[0].kind, NormalizedSchema::Const(_)));
+
+        let arena = parse(r#"{"const":"é","minLength":2}"#).unwrap();
+        assert_eq!(arena.nodes[0].kind, NormalizedSchema::Never);
+
+        let arena = parse(r#"{"enum":["a","bb",1],"minLength":2}"#).unwrap();
+        let NormalizedSchema::Enum(values) = &arena.nodes[0].kind else {
+            panic!("finite string constraints must remain an enum");
+        };
+        assert_eq!(
+            values
+                .iter()
+                .map(|value| value.json.as_str())
+                .collect::<Vec<_>>(),
+            ["\"bb\"", "1"]
+        );
+    }
+
+    #[test]
+    fn numeric_equivalence_is_canonical() {
+        let value: Value = serde_json::from_str("1.0").unwrap();
+        assert_eq!(canonical_value(&value).unwrap().json, "1");
+        let value: Value = serde_json::from_str("-0.0").unwrap();
+        assert_eq!(canonical_value(&value).unwrap().json, "0");
+
+        let arena = parse(r#"{"type":"integer","const":1.0}"#).unwrap();
+        assert_eq!(
+            arena.nodes[0].kind,
+            NormalizedSchema::Const(CanonicalValue {
+                json: "1".to_owned(),
+            })
+        );
+        assert!(matches!(
+            parse(r#"{"enum":[1,1.0]}"#),
+            Err(CompileError::InvalidKeywordValue { .. })
+        ));
+        assert!(matches!(
+            parse(r#"{"enum":[1000,1e3]}"#),
+            Err(CompileError::InvalidKeywordValue { .. })
+        ));
+
+        let arena = parse(r#"{"enum":[9007199254740992,9007199254740993]}"#).unwrap();
+        let NormalizedSchema::Enum(values) = &arena.nodes[0].kind else {
+            panic!("distinct arbitrary-precision numbers must remain an enum");
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(
+            canonical_number(&serde_json::from_str("1e100").unwrap()).unwrap(),
+            "1e100"
+        );
+        assert!(matches!(
+            parse(r#"{"const":1e999999999999999999999999999999999999999}"#),
+            Err(CompileError::UnsupportedCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn duplicate_scan_does_not_confuse_reserved_text_with_numbers() {
+        assert!(matches!(
+            parse(r#"{"const":{"$serde_json::private::Number":"not-a-number"}}"#),
+            Err(CompileError::UnsupportedCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn unsupported_uri_rebasing_is_explicit() {
+        assert!(matches!(
+            parse(r#"{"$id":"nested/","const":1}"#),
+            Err(CompileError::UnsupportedKeyword { keyword, .. }) if keyword == "$id"
+        ));
+    }
+
+    #[test]
+    fn untyped_string_constraints_are_not_ignored() {
+        assert!(matches!(
+            parse(r#"{"minLength":1}"#),
+            Err(CompileError::UnsupportedCombination { .. })
+        ));
+        let arena = parse(r#"{"type":"number","minLength":1}"#).unwrap();
+        assert_eq!(arena.nodes[0].kind, NormalizedSchema::Number);
+    }
+
+    #[test]
+    fn inapplicable_adjacent_assertions_do_not_change_a_typed_language() {
+        let arena =
+            parse(r#"{"type":"string","required":["x"],"minItems":2,"minLength":1}"#).unwrap();
+        assert!(matches!(
+            arena.nodes[0].kind,
+            NormalizedSchema::String(StringConstraints { min_length: 1, .. })
+        ));
+
+        let arena =
+            parse(r#"{"type":"array","required":["x"],"items":false,"maxItems":0}"#).unwrap();
+        assert!(matches!(arena.nodes[0].kind, NormalizedSchema::Array(_)));
+    }
+
+    #[test]
+    fn additional_properties_defaults_to_open() {
+        let arena = parse(r#"{"type":"object","properties":{"x":{"const":1}}}"#).unwrap();
+        let NormalizedSchema::Object(object) = &arena.nodes[0].kind else {
+            panic!("object schema must remain an object");
+        };
+        assert_eq!(
+            object.additional_properties,
+            AdditionalProperties::Unconstrained
         );
     }
 }

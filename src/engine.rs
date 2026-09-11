@@ -430,4 +430,16 @@ mod tests {
             .allowed_tokens(&compiled.index().unwrap().initial_state())
             .is_none());
     }
+
+    #[test]
+    fn open_object_language_is_never_weakened() {
+        let error = CompiledSchema::analyze(
+            br#"{"type":"object","properties":{"x":{"const":1}}}"#,
+            &CompileOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, CompileError::UnsupportedCombination { .. }));
+        assert!(error.to_string().contains("canonical key-order memory"));
+    }
 }

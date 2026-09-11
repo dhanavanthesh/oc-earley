@@ -361,10 +361,36 @@ fn lower_array(
         });
     }
 
-    let state_count = effective_max
-        .map(|maximum| maximum + 1)
-        .unwrap_or(array.prefix_items.len() + 1);
+    let position_count = effective_max.unwrap_or(array.prefix_items.len());
+    let state_count = position_count
+        .checked_add(1)
+        .ok_or(CompileError::ResourceLimitExceeded {
+            stage: CompileStage::Lowering,
+            observed: usize::MAX,
+            limit: builder.limits.max_symbols,
+        })?;
+    let total_symbols = builder.nonterminals.len().checked_add(state_count).ok_or(
+        CompileError::ResourceLimitExceeded {
+            stage: CompileStage::Lowering,
+            observed: usize::MAX,
+            limit: builder.limits.max_symbols,
+        },
+    )?;
+    if total_symbols > builder.limits.max_symbols {
+        return Err(CompileError::ResourceLimitExceeded {
+            stage: CompileStage::Lowering,
+            observed: total_symbols,
+            limit: builder.limits.max_symbols,
+        });
+    }
     let mut states = Vec::new();
+    states
+        .try_reserve_exact(state_count)
+        .map_err(|_| CompileError::ResourceLimitExceeded {
+            stage: CompileStage::Lowering,
+            observed: state_count,
+            limit: builder.limits.max_symbols,
+        })?;
     for index in 0..state_count {
         states.push(builder.add_nonterminal(
             format!("array_{}_position_{}", schema_id.0, index),
@@ -2163,6 +2189,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn maximum_array_bound_cannot_overflow_state_count() {
+        let arena = crate::schema::parse_and_normalize(
+            br#"{"type":"array","items":{"const":1},"maxItems":18446744073709551615}"#,
+            &CompileOptions::default(),
+        );
+        match arena {
+            Ok(arena) => assert!(matches!(
+                lower(&arena, &CompileLimits::default()),
+                Err(CompileError::ResourceLimitExceeded {
+                    stage: CompileStage::Lowering,
+                    ..
+                })
+            )),
+            Err(CompileError::InvalidKeywordValue { .. }) => {}
+            Err(error) => panic!("unexpected error: {error}"),
+        }
     }
 
     #[test]
