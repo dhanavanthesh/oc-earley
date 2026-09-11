@@ -1614,4 +1614,29 @@ mod tests {
             AdditionalProperties::Unconstrained
         );
     }
+
+    #[test]
+    fn arbitrary_single_bytes_return_deterministic_results() {
+        for byte in 0..=u8::MAX {
+            let input = [byte];
+            let first = parse_and_normalize(&input, &CompileOptions::default())
+                .map(|arena| arena.nodes.len().to_string())
+                .unwrap_or_else(|error| error.to_string());
+            let second = parse_and_normalize(&input, &CompileOptions::default())
+                .map(|arena| arena.nodes.len().to_string())
+                .unwrap_or_else(|error| error.to_string());
+            assert_eq!(first, second, "input byte {byte}");
+        }
+    }
+
+    #[test]
+    fn excessive_json_nesting_returns_an_error_without_stack_overflow() {
+        let depth = 1_024;
+        let mut input = String::with_capacity(depth * 2 + 1);
+        input.push_str(&"[".repeat(depth));
+        input.push_str("true");
+        input.push_str(&"]".repeat(depth));
+
+        assert!(parse_and_normalize(input.as_bytes(), &CompileOptions::default()).is_err());
+    }
 }
