@@ -54,7 +54,7 @@ For schema $S$, canonical encoder $\Pi$, and lowering $\Lambda$:
 Backend selection preserves that language exactly:
 
 ```math
-\operatorname{Backend}(G_S)=
+\mathrm{Backend}(G_S)=
 \begin{cases}
 \mathrm{DFA}, & \text{whole language has an exact regular certificate}\\
 \mathrm{LALR}(1), & \text{table and terminal boundaries are conflict-free}\\
@@ -173,7 +173,7 @@ Recognition succeeds only when the augmented start production is complete. Leo c
 of completion work, never the accepted language:
 
 ```math
-\operatorname{Accept}_{LeoOff}(x)=\operatorname{Accept}_{LeoOn}(x)
+\mathrm{Accept}_{LeoOff}(x)=\mathrm{Accept}_{LeoOn}(x)
 ```
 
 The packed token-mask ABI is unchanged:
@@ -187,13 +187,13 @@ Masks use native-endian `u32` words, LSB-first, after clearing the destination b
 For recognizer configuration $h$ and tokenizer byte string $b(v)$, a token bit is exact:
 
 ```math
-M_h(v)=1\iff\operatorname{Live}(\operatorname{Advance}^{*}(h,b(v)))
+M_h(v)=1\iff\mathrm{Live}(\mathrm{Advance}^{*}(h,b(v)))
 ```
 
 EOS follows acceptance rather than ordinary byte traversal:
 
 ```math
-M_h(\mathrm{EOS})=1\iff\operatorname{Accepting}(h)
+M_h(\mathrm{EOS})=1\iff\mathrm{Accepting}(h)
 ```
 
 The trie shares token prefixes and prunes rejected subtrees. With $W=\lceil |V|/32\rceil$ mask
