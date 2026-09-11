@@ -3,7 +3,9 @@
 #[cfg(feature = "hugginface-hub")]
 pub use tokenizers::FromPretrainedParameters;
 
-pub use super::engine::{CompiledBackend, CompiledSchema, SemanticContract, TierReport};
+pub use super::engine::{
+    CompileProfile, CompiledBackend, CompiledSchema, SemanticContract, TierReport,
+};
 pub use super::grammar::Grammar;
 pub use super::index::Index;
 pub use super::json_schema;

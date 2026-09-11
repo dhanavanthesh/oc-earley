@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
+use std::time::{Duration, Instant};
 
 use regex_automata::dfa::{dense, Automaton};
 use regex_automata::nfa::thompson::{self, State, Transition, WhichCaptures};
@@ -1141,6 +1142,12 @@ pub struct CompiledByteDfa {
     memory_bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AutomatonTimings {
+    pub nfa: Duration,
+    pub dfa: Duration,
+}
+
 impl CompiledByteDfa {
     pub fn compile(
         expression: &RegularExpression,
@@ -1150,14 +1157,41 @@ impl CompiledByteDfa {
         Self::compile_configured(expression, limits, pointer, false)
     }
 
+    pub(crate) fn compile_profiled(
+        expression: &RegularExpression,
+        limits: &CompileLimits,
+        pointer: &crate::schema::SchemaPointer,
+    ) -> Result<(Self, AutomatonTimings), CompileError> {
+        Self::compile_measured(expression, limits, pointer, false)
+    }
+
     fn compile_configured(
         expression: &RegularExpression,
         limits: &CompileLimits,
         pointer: &crate::schema::SchemaPointer,
         minimize: bool,
     ) -> Result<Self, CompileError> {
+        Self::compile_measured(expression, limits, pointer, minimize).map(|(dfa, _)| dfa)
+    }
+
+    fn compile_measured(
+        expression: &RegularExpression,
+        limits: &CompileLimits,
+        pointer: &crate::schema::SchemaPointer,
+        minimize: bool,
+    ) -> Result<(Self, AutomatonTimings), CompileError> {
+        let nfa_started = Instant::now();
         if expression == &RegularExpression::Empty {
-            return Self::empty(limits);
+            let nfa = nfa_started.elapsed();
+            let dfa_started = Instant::now();
+            let dfa = Self::empty(limits)?;
+            return Ok((
+                dfa,
+                AutomatonTimings {
+                    nfa,
+                    dfa: dfa_started.elapsed(),
+                },
+            ));
         }
 
         let nfa_byte_limit = limits
@@ -1209,7 +1243,9 @@ impl CompiledByteDfa {
             limits.max_nfa_states,
         )?;
         let nfa_transitions = count_nfa_transitions(&nfa, limits.max_nfa_transitions)?;
+        let nfa_elapsed = nfa_started.elapsed();
 
+        let dfa_started = Instant::now();
         let mut builder = dense::Builder::new();
         builder.configure(
             dense::Config::new()
@@ -1334,14 +1370,20 @@ impl CompiledByteDfa {
             memory_bytes,
             limits.max_dfa_bytes,
         )?;
-        Ok(Self {
-            transitions,
-            accepting,
-            live,
-            nfa_states,
-            nfa_transitions,
-            memory_bytes,
-        })
+        Ok((
+            Self {
+                transitions,
+                accepting,
+                live,
+                nfa_states,
+                nfa_transitions,
+                memory_bytes,
+            },
+            AutomatonTimings {
+                nfa: nfa_elapsed,
+                dfa: dfa_started.elapsed(),
+            },
+        ))
     }
 
     fn empty(limits: &CompileLimits) -> Result<Self, CompileError> {
@@ -1720,6 +1762,13 @@ pub struct RegularAnalysis {
 
 pub fn certify_regular(grammar: &Grammar) -> Result<RegularAnalysis, CompileError> {
     let sccs = analyze_sccs(grammar)?;
+    certify_regular_with_sccs(grammar, sccs)
+}
+
+pub(crate) fn certify_regular_with_sccs(
+    grammar: &Grammar,
+    sccs: SccAnalysis,
+) -> Result<RegularAnalysis, CompileError> {
     let mut expressions = vec![None; grammar.nonterminals.len()];
     let mut outcomes: Vec<Option<Result<RegularCertificateKind, CertificateFailureReason>>> =
         vec![None; sccs.components.len()];

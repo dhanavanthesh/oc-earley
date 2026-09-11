@@ -83,3 +83,28 @@ def test_serialized_headers_reject_invalid_inputs():
 
     with pytest.raises(ValueError, match="invalid magic bytes"):
         CompiledSchema.from_binary([0] * 13)
+
+
+def test_profile_reports_each_compiler_stage_without_changing_the_tier_report():
+    compiled = CompiledSchema.from_json_schema(
+        {"const": "done"},
+        vocabulary([('"done"', 0)], 1),
+    )
+    report = compiled.tier_report()
+    profile = compiled.profile()
+    stage_names = {
+        "schema_parse_ns",
+        "normalization_ns",
+        "grammar_lowering_ns",
+        "grammar_reduction_ns",
+        "scc_analysis_ns",
+        "regular_certification_ns",
+        "nfa_construction_ns",
+        "dfa_determinization_ns",
+        "vocabulary_projection_ns",
+    }
+
+    assert set(profile) == stage_names | {"total_ns"}
+    assert all(isinstance(profile[name], int) for name in profile)
+    assert profile["total_ns"] >= sum(profile[name] for name in stage_names)
+    assert compiled.tier_report() == report

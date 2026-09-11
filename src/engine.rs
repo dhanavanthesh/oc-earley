@@ -1,5 +1,7 @@
 //! Schema compiler orchestration and backend selection.
 
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 
 use crate::error::CompileError;
@@ -57,6 +59,20 @@ pub struct TierReport {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CompileProfile {
+    pub schema_parse_ns: u64,
+    pub normalization_ns: u64,
+    pub grammar_lowering_ns: u64,
+    pub grammar_reduction_ns: u64,
+    pub scc_analysis_ns: u64,
+    pub regular_certification_ns: u64,
+    pub nfa_construction_ns: u64,
+    pub dfa_determinization_ns: u64,
+    pub vocabulary_projection_ns: u64,
+    pub total_ns: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SemanticContract {
     pub format_version: u32,
@@ -92,6 +108,7 @@ struct PreparedCompilation {
     report: TierReport,
     dfa: Option<CompiledByteDfa>,
     structural_plan: StructuralPlan,
+    profile: CompileProfile,
 }
 
 impl CompiledSchema {
@@ -104,18 +121,39 @@ impl CompiledSchema {
         vocabulary: &Vocabulary,
         options: &CompileOptions,
     ) -> Result<Self> {
-        let prepared = prepare(schema, options)?;
-        let backend = match prepared.dfa {
-            Some(dfa) => CompiledBackend::Dfa(Index::from_certified_dfa(&dfa, vocabulary)?),
-            None => CompiledBackend::StructuralPending(prepared.structural_plan),
+        Self::compile_profiled(schema, vocabulary, options).map(|(compiled, _)| compiled)
+    }
+
+    pub fn compile_profiled(
+        schema: &[u8],
+        vocabulary: &Vocabulary,
+        options: &CompileOptions,
+    ) -> Result<(Self, CompileProfile)> {
+        let total_started = Instant::now();
+        let mut prepared = prepare(schema, options)?;
+        let (backend, vocabulary_projection_ns) = match prepared.dfa {
+            Some(dfa) => {
+                let projection_started = Instant::now();
+                let index = Index::from_certified_dfa(&dfa, vocabulary)?;
+                (CompiledBackend::Dfa(index), elapsed_ns(projection_started))
+            }
+            None => (
+                CompiledBackend::StructuralPending(prepared.structural_plan),
+                0,
+            ),
         };
-        Ok(Self {
-            semantic_contract: semantic_contract(),
-            normalized: prepared.arena,
-            grammar: prepared.grammar,
-            report: prepared.report,
-            backend,
-        })
+        prepared.profile.vocabulary_projection_ns = vocabulary_projection_ns;
+        prepared.profile.total_ns = elapsed_ns(total_started);
+        Ok((
+            Self {
+                semantic_contract: semantic_contract(),
+                normalized: prepared.arena,
+                grammar: prepared.grammar,
+                report: prepared.report,
+                backend,
+            },
+            prepared.profile,
+        ))
     }
 
     pub fn index(&self) -> Result<&Index, CompileError> {
@@ -131,10 +169,29 @@ impl CompiledSchema {
 }
 
 fn prepare(schema: &[u8], options: &CompileOptions) -> Result<PreparedCompilation, CompileError> {
-    let arena = crate::schema::parse_and_normalize(schema, options)?;
+    let parse_started = Instant::now();
+    let root = crate::schema::parse_schema(schema, options)?;
+    let schema_parse_ns = elapsed_ns(parse_started);
+
+    let normalization_started = Instant::now();
+    let arena = crate::schema::normalize_schema(root, options)?;
+    let normalization_ns = elapsed_ns(normalization_started);
+
+    let lowering_started = Instant::now();
     let mut grammar = grammar::lower(&arena, &options.limits)?;
+    let grammar_lowering_ns = elapsed_ns(lowering_started);
+
+    let reduction_started = Instant::now();
     grammar::reduce(&mut grammar)?;
-    let analysis = grammar::certify_regular(&grammar)?;
+    let grammar_reduction_ns = elapsed_ns(reduction_started);
+
+    let scc_started = Instant::now();
+    let sccs = grammar::analyze_sccs(&grammar)?;
+    let scc_analysis_ns = elapsed_ns(scc_started);
+
+    let certification_started = Instant::now();
+    let analysis = grammar::certify_regular_with_sccs(&grammar, sccs)?;
+    let regular_certification_ns = elapsed_ns(certification_started);
 
     let root = grammar.nonterminals.get(grammar.start as usize).ok_or(
         CompileError::InternalInvariant {
@@ -151,13 +208,17 @@ fn prepare(schema: &[u8], options: &CompileOptions) -> Result<PreparedCompilatio
             .map(|certificate| certificate.scc)
             .collect(),
     };
-    let dfa = analysis
-        .whole_language
-        .as_ref()
-        .map(|expression| {
-            CompiledByteDfa::compile(expression, &options.limits, &root.provenance.pointer)
-        })
-        .transpose()?;
+    let (dfa, automaton_profile) = match analysis.whole_language.as_ref() {
+        Some(expression) => {
+            let (dfa, profile) = CompiledByteDfa::compile_profiled(
+                expression,
+                &options.limits,
+                &root.provenance.pointer,
+            )?;
+            (Some(dfa), profile)
+        }
+        None => (None, grammar::AutomatonTimings::default()),
+    };
     let report = build_report(&arena, &grammar, &analysis, dfa.as_ref())?;
 
     Ok(PreparedCompilation {
@@ -166,7 +227,27 @@ fn prepare(schema: &[u8], options: &CompileOptions) -> Result<PreparedCompilatio
         report,
         dfa,
         structural_plan,
+        profile: CompileProfile {
+            schema_parse_ns,
+            normalization_ns,
+            grammar_lowering_ns,
+            grammar_reduction_ns,
+            scc_analysis_ns,
+            regular_certification_ns,
+            nfa_construction_ns: duration_ns(automaton_profile.nfa),
+            dfa_determinization_ns: duration_ns(automaton_profile.dfa),
+            vocabulary_projection_ns: 0,
+            total_ns: 0,
+        },
     })
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    duration_ns(started.elapsed())
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn build_report(
@@ -441,5 +522,45 @@ mod tests {
 
         assert!(matches!(error, CompileError::UnsupportedCombination { .. }));
         assert!(error.to_string().contains("canonical key-order memory"));
+    }
+
+    #[test]
+    fn profiled_compilation_accounts_for_every_stage() {
+        let vocabulary = vocabulary(&[(r#""done""#, 0)], 1);
+        let (compiled, profile) = CompiledSchema::compile_profiled(
+            br#"{"const":"done"}"#,
+            &vocabulary,
+            &CompileOptions::default(),
+        )
+        .unwrap();
+        let accounted = profile.schema_parse_ns
+            + profile.normalization_ns
+            + profile.grammar_lowering_ns
+            + profile.grammar_reduction_ns
+            + profile.scc_analysis_ns
+            + profile.regular_certification_ns
+            + profile.nfa_construction_ns
+            + profile.dfa_determinization_ns
+            + profile.vocabulary_projection_ns;
+
+        assert_eq!(compiled.report.selected_backend, BackendKind::WholeDfa);
+        assert!(profile.total_ns >= accounted);
+    }
+
+    #[test]
+    fn structural_profile_does_not_claim_automaton_or_projection_work() {
+        let schema = include_bytes!("../testdata/regressions/recursive_optional_property.json");
+        let vocabulary = vocabulary(&[("null", 0)], 1);
+        let (compiled, profile) =
+            CompiledSchema::compile_profiled(schema, &vocabulary, &CompileOptions::default())
+                .unwrap();
+
+        assert_eq!(
+            compiled.report.selected_backend,
+            BackendKind::StructuralPending
+        );
+        assert_eq!(profile.nfa_construction_ns, 0);
+        assert_eq!(profile.dfa_determinization_ns, 0);
+        assert_eq!(profile.vocabulary_projection_ns, 0);
     }
 }

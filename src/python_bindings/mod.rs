@@ -581,6 +581,21 @@ impl PyCompiledSchema {
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
+    /// Recompiles the schema and returns per-stage timing in nanoseconds.
+    fn profile(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let profile = py.detach(|| {
+            CompiledSchema::compile_profiled(
+                &self.schema,
+                &self.vocabulary,
+                &CompileOptions::default(),
+            )
+            .map(|(_, profile)| profile)
+        })?;
+        serde_pyobject::to_pyobject(py, &profile)
+            .map(Bound::unbind)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
     /// Returns the selected backend name.
     #[getter]
     fn backend(&self) -> &'static str {

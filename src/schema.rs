@@ -268,6 +268,11 @@ pub fn parse_and_normalize(
     schema: &[u8],
     options: &CompileOptions,
 ) -> Result<SchemaArena, CompileError> {
+    let root = parse_schema(schema, options)?;
+    normalize_schema(root, options)
+}
+
+pub(crate) fn parse_schema(schema: &[u8], options: &CompileOptions) -> Result<Value, CompileError> {
     enforce_limit(
         CompileStage::Parse,
         schema.len(),
@@ -308,6 +313,13 @@ pub fn parse_and_normalize(
         ));
     }
 
+    Ok(root)
+}
+
+pub(crate) fn normalize_schema(
+    root: Value,
+    options: &CompileOptions,
+) -> Result<SchemaArena, CompileError> {
     let raw_nodes = index_schema_locations(root, &options.limits)?;
     let mut pointer_to_id = BTreeMap::new();
     for (index, (pointer, _)) in raw_nodes.iter().enumerate() {
