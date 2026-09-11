@@ -109,10 +109,6 @@ impl Index {
         Self::project_byte_dfa(&dfa, vocabulary, ProjectionPolicy::Legacy { regex })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the schema compiler integration")
-    )]
     pub(crate) fn from_certified_dfa(
         dfa: &CompiledByteDfa,
         vocabulary: &Vocabulary,
@@ -358,13 +354,7 @@ impl ByteDfa for CompiledByteDfa {
 
 #[derive(Clone, Copy)]
 enum ProjectionPolicy<'a> {
-    Legacy {
-        regex: &'a str,
-    },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the schema compiler integration")
-    )]
+    Legacy { regex: &'a str },
     Exact,
 }
 

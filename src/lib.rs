@@ -81,6 +81,7 @@
 //! }
 //! ```
 
+pub mod engine;
 pub mod error;
 pub mod grammar;
 pub mod index;
@@ -90,6 +91,7 @@ pub mod primitives;
 pub mod schema;
 pub mod vocabulary;
 
+pub use engine::{CompiledBackend, CompiledSchema, SemanticContract, TierReport};
 pub use error::{CompileError, CompileStage, Error, Result};
 
 #[cfg(feature = "python-bindings")]
