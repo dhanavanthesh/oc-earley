@@ -7,6 +7,7 @@ def test_import_oc_earley():
     assert hasattr(oc_earley, "Guide")
     assert hasattr(oc_earley, "Index")
     assert hasattr(oc_earley, "Vocabulary")
+    assert hasattr(oc_earley, "CompiledSchema")
     assert hasattr(oc_earley, "json_schema")
 
 
@@ -40,8 +41,9 @@ def test_import_from_json_schema():
 
 
 def test_import_main_classes():
-    from oc_earley import Guide, Index, Vocabulary
+    from oc_earley import CompiledSchema, Guide, Index, Vocabulary
 
+    assert CompiledSchema is not None
     assert Guide is not None
     assert Index is not None
     assert Vocabulary is not None
@@ -59,12 +61,14 @@ def test_import_rust_extension_directly():
     assert hasattr(oc_earley, "Guide")
     assert hasattr(oc_earley, "Index")
     assert hasattr(oc_earley, "Vocabulary")
+    assert hasattr(oc_earley, "CompiledSchema")
     assert hasattr(oc_earley, "json_schema")
 
 
 def test_import_from_rust_extension():
-    from oc_earley.oc_earley import Guide, Index, Vocabulary
+    from oc_earley.oc_earley import CompiledSchema, Guide, Index, Vocabulary
 
+    assert CompiledSchema is not None
     assert Guide is not None
     assert Index is not None
     assert Vocabulary is not None
