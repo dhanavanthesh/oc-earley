@@ -948,13 +948,9 @@ fn parse_declared_type(
     let Some(raw_type) = object.get("type") else {
         return Ok(None);
     };
-    let name = raw_type.as_str().ok_or_else(|| {
-        invalid_value(
-            pointer,
-            "type",
-            "K1 requires type to be a single string",
-        )
-    })?;
+    let name = raw_type
+        .as_str()
+        .ok_or_else(|| invalid_value(pointer, "type", "K1 requires type to be a single string"))?;
     let kind = match name {
         "null" => JsonType::Null,
         "boolean" => JsonType::Boolean,

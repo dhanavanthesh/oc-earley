@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "oc-earley"
-authors= [{name = "Outlines Developers"}]
-description = "Structured Text Generation in Rust"
+authors= [{name = "OC-Earley Developers"}]
+description = "Exact JSON Schema constrained decoding in Rust and Python"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
 keywords=[
@@ -15,7 +15,6 @@ keywords=[
     "structured generation",
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: Science/Research",
@@ -26,7 +25,6 @@ classifiers = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-# TODO: remove when numba is supported on the free-threaded build
 test-without-numba = [
     "pre-commit",
     "pydantic",

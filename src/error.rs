@@ -37,7 +37,7 @@ pub enum Error {
     // Json Schema errors
     #[error("serde json error")]
     SerdeJsonError(#[from] serde_json::Error),
-    #[error("Unsupported JSON Schema structure {0} \nMake sure it is valid to the JSON Schema specification and check if it's supported by Outlines.\nIf it should be supported, please open an issue.")]
+    #[error("Unsupported JSON Schema structure {0} \nMake sure it is valid to the JSON Schema specification and supported by OC-Earley.\nIf it should be supported, please open an issue.")]
     UnsupportedJsonSchema(Box<serde_json::Value>),
     #[error("'properties' not found or not an object")]
     PropertiesNotFound,
@@ -69,9 +69,9 @@ pub enum Error {
     UnsupportedType(Box<str>),
     #[error("maxLength must be greater than or equal to minLength")]
     MaxBoundError,
-    #[error("Numeric bound '{0}' is not supported by Outlines")]
+    #[error("Numeric bound '{0}' is not supported by OC-Earley")]
     UnsupportedNumericBound(Box<str>),
-    #[error("Format {0} is not supported by Outlines")]
+    #[error("Format {0} is not supported by OC-Earley")]
     StringTypeUnsupportedFormat(Box<str>),
     #[error("Invalid reference path: {0}")]
     InvalidRefecencePath(Box<str>),
