@@ -44,3 +44,31 @@ def test_recursive_array_reaches_depth_one_hundred():
 
     recognizer = compiled.recognizer()
     assert recognizer.advance(value) == "accepting"
+
+
+def test_production_guides_reach_depth_one_hundred():
+    cases = [
+        (
+            "recursive_object.json",
+            '{"value":"x"}',
+            lambda value: f'{{"next":{value},"value":"x"}}',
+        ),
+        ("recursive_array.json", "null", lambda value: f"[{value}]"),
+    ]
+    for fixture, base, wrap in cases:
+        schema = json.loads((REGRESSIONS / fixture).read_text())
+        value = base
+        for _ in range(99):
+            value = wrap(value)
+        compiled = CompiledSchema.from_json_schema(
+            schema,
+            Vocabulary(1, {value: [0]}),
+        )
+        guide = compiled.guide()
+
+        assert guide.get_tokens() == [0]
+        guide.advance(0, return_tokens=False)
+        assert guide.is_accepting()
+        assert guide.get_tokens() == [1]
+        guide.advance(1, return_tokens=False)
+        assert guide.is_finished()

@@ -34,7 +34,7 @@ def dfa_accepts(compiled, token_id):
         guide.advance(token_id, False)
     except ValueError:
         return False
-    return guide.is_finished()
+    return guide.is_accepting()
 
 
 @pytest.mark.parametrize(
@@ -113,6 +113,10 @@ def test_token_mask_membership_matches_live_dfa_transitions():
     assert not guide.is_finished()
     assert guide.get_tokens() == [4]
     guide.advance(4, False)
+    assert guide.is_accepting()
+    assert not guide.is_finished()
+    assert guide.get_tokens() == [5]
+    guide.advance(5, False)
     assert guide.is_finished()
 
     guide = compiled.guide()

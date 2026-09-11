@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 import json
 import re
 

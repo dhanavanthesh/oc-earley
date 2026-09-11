@@ -48,7 +48,7 @@ def test_every_binary_object_uses_the_versioned_header():
     for value in (vocabulary, index, guide, compiled):
         binary = value.__reduce__()[1][0]
         assert binary[:8] == b"OCEARLEY"
-        assert binary[8:12] == bytes([1, 0, 0, 0])
+        assert binary[8:12] == bytes([2, 0, 0, 0])
 
 
 def test_binary_decoders_reject_trailing_and_legacy_payloads():

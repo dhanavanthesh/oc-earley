@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 import importlib
 import sysconfig
 
@@ -16,6 +19,15 @@ FREE_THREADED_BUILD = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 @pytest.fixture(scope="session")
 def guide() -> Guide:
     return Guide(Index("\\+?[1-9][0-9]{7,14}", VOCAB))
+
+
+def test_guide_mask_allocators_use_sparse_token_width():
+    sparse = Guide(Index("a|b", Vocabulary(100, {"a": [0], "b": [5]})))
+    from oc_earley.kernels.numpy import allocate_guide_bitmask as allocate_numpy
+    from oc_earley.kernels.torch import allocate_guide_bitmask as allocate_torch
+
+    assert allocate_numpy(sparse).shape == (1, 4)
+    assert allocate_torch(sparse).shape == (1, 4)
 
 
 @pytest.mark.skipif(

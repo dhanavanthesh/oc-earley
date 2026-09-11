@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 import copy
 import pickle
 from typing import Dict, List, Union
@@ -31,18 +34,16 @@ def test_interface():
     assert guide.get_tokens() == [1]
 
     assert guide.advance(1) == [vocabulary.get_eos_token_id()]
-    assert guide.is_finished()
+    assert guide.is_accepting()
+    assert not guide.is_finished()
     assert guide.get_state() == 20
     assert guide.get_tokens() == [eos_token_id]
+    assert guide.advance(eos_token_id) == []
+    assert guide.is_finished()
+    assert guide.get_tokens() == []
 
-    with pytest.raises(
-        ValueError,
-        match="No next state found for the current state",
-    ):
-        # No advancement is possible for state with allowed tokens == eos
-        assert guide.advance(eos_token_id)
-        # As well as with any other random token id
-        assert guide.advance(4)
+    with pytest.raises(ValueError, match="guide is finished"):
+        guide.advance(4)
 
 
 def test_regex_final_state_walk():
@@ -60,6 +61,9 @@ def test_regex_final_state_walk():
     assert sorted(guide.advance(103)) == [101, 102]
     assert guide.advance(101) == [103]
     assert guide.advance(103) == [vocabulary.get_eos_token_id()]
+    assert guide.is_accepting()
+    assert not guide.is_finished()
+    guide.advance(eos_token_id)
     assert guide.is_finished()
 
 
@@ -78,6 +82,10 @@ def test_token_trans_keys_identical():
     # `a` and `b` have similar transitions to `z`
     assert sorted(guide1.advance(1)) == sorted(guide2.advance(2))
     assert guide1.advance(3) == guide2.advance(3) == [eos_token_id]
+    assert guide1.is_accepting()
+    assert guide2.is_accepting()
+    guide1.advance(eos_token_id)
+    guide2.advance(eos_token_id)
     assert guide1.is_finished()
     assert guide2.is_finished()
 
@@ -99,6 +107,8 @@ def test_str_and_bytes_produce_the_same():
     # `a` and `b` have similar transitions to `z`
     assert sorted(guide1.advance(1)) == sorted(guide2.advance(2))
     assert guide1.advance(3) == guide2.advance(3) == [eos_token_id]
+    guide1.advance(eos_token_id)
+    guide2.advance(eos_token_id)
     assert guide1.is_finished()
     assert guide2.is_finished()
 

@@ -34,8 +34,7 @@ def test_recursive_property_is_preserved_in_the_structural_grammar(name):
         component["failure_reason"] == "RecursiveSymbolInInterior"
         for component in report["sccs"]
     )
-    with pytest.raises(ValueError, match="structural backend is required"):
-        compiled.guide()
+    assert compiled.guide().backend == compiled.backend
 
 
 def test_recursive_report_is_byte_stable():

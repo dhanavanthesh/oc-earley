@@ -27,6 +27,9 @@ def test_regular_schema_produces_a_guide():
     assert 0 in guide.get_tokens()
     assert 1 not in guide.get_tokens()
     guide.advance(0)
+    assert guide.is_accepting()
+    assert not guide.is_finished()
+    guide.advance(2)
     assert guide.is_finished()
 
 
@@ -44,12 +47,20 @@ def test_recursive_schema_uses_a_structural_recognizer():
     schema = json.loads(
         (REGRESSIONS / "recursive_optional_property.json").read_text()
     )
-    compiled = CompiledSchema.from_json_schema(schema, vocabulary([("null", 0)], 1))
+    compiled = CompiledSchema.from_json_schema(
+        schema,
+        vocabulary([('{"value":"x"}', 0)], 1),
+    )
 
     assert compiled.backend in {"lalr", "earley"}
     assert compiled.tier_report()["diagnostics"]
-    with pytest.raises(ValueError, match="structural backend is required"):
-        compiled.guide()
+    guide = compiled.guide()
+    assert guide.backend == compiled.backend
+    assert guide.get_tokens() == [0]
+    assert guide.advance(0) == [1]
+    assert guide.is_accepting()
+    guide.advance(1)
+    assert guide.is_finished()
     recognizer = compiled.recognizer()
     assert recognizer.advance('{"value":"x"}') == "accepting"
     assert recognizer.accepting
@@ -80,8 +91,8 @@ def test_serialized_headers_reject_invalid_inputs():
         Index.from_binary(binary)
 
     wrong_version = list(binary)
-    wrong_version[8] = 2
-    with pytest.raises(ValueError, match="format version 2 is unsupported"):
+    wrong_version[8] = 3
+    with pytest.raises(ValueError, match="format version 3 is unsupported"):
         CompiledSchema.from_binary(wrong_version)
 
     with pytest.raises(ValueError, match="invalid magic bytes"):
@@ -104,6 +115,7 @@ def test_profile_reports_each_compiler_stage_without_changing_the_tier_report():
         "regular_certification_ns",
         "nfa_construction_ns",
         "dfa_determinization_ns",
+        "vocabulary_trie_ns",
         "vocabulary_projection_ns",
         "residual_grammar_ns",
         "lalr_construction_ns",

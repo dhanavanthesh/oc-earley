@@ -62,7 +62,7 @@ def test_pinned_draft_2020_12_group(record):
         guide = compiled.guide()
         try:
             guide.advance(token_id, False)
-            actual = guide.is_finished()
+            actual = guide.is_accepting()
         except ValueError:
             actual = False
         assert actual == expected, test["description"]
