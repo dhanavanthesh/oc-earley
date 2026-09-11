@@ -40,16 +40,19 @@ def test_python_mapping_schema_is_supported():
     assert compiled.guide().get_tokens() == [0]
 
 
-def test_recursive_schema_fails_before_decode():
+def test_recursive_schema_uses_a_structural_recognizer():
     schema = json.loads(
         (REGRESSIONS / "recursive_optional_property.json").read_text()
     )
     compiled = CompiledSchema.from_json_schema(schema, vocabulary([("null", 0)], 1))
 
-    assert compiled.backend == "structural_pending"
+    assert compiled.backend in {"lalr", "earley"}
     assert compiled.tier_report()["diagnostics"]
     with pytest.raises(ValueError, match="structural backend is required"):
         compiled.guide()
+    recognizer = compiled.recognizer()
+    assert recognizer.advance('{"value":"x"}') == "accepting"
+    assert recognizer.accepting
 
 
 def test_compiled_schema_pickle_recompiles_the_same_contract():
@@ -102,6 +105,9 @@ def test_profile_reports_each_compiler_stage_without_changing_the_tier_report():
         "nfa_construction_ns",
         "dfa_determinization_ns",
         "vocabulary_projection_ns",
+        "residual_grammar_ns",
+        "lalr_construction_ns",
+        "earley_preparation_ns",
     }
 
     assert set(profile) == stage_names | {"total_ns"}

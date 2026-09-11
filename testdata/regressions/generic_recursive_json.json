@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "value": {
+      "anyOf": [
+        {"const": null},
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "string"},
+        {
+          "type": "array",
+          "items": {"$ref": "#/$defs/value"}
+        }
+      ]
+    }
+  },
+  "$ref": "#/$defs/value"
+}

@@ -1,0 +1,12 @@
+{
+  "start": "S",
+  "terminals": {"id": "n", "plus": "+", "times": "*"},
+  "productions": [
+    {"lhs": "S", "rhs": [{"nonterminal": "E"}]},
+    {"lhs": "E", "rhs": [{"nonterminal": "E"}, {"terminal": "plus"}, {"nonterminal": "T"}]},
+    {"lhs": "E", "rhs": [{"nonterminal": "T"}]},
+    {"lhs": "T", "rhs": [{"nonterminal": "T"}, {"terminal": "times"}, {"nonterminal": "F"}]},
+    {"lhs": "T", "rhs": [{"nonterminal": "F"}]},
+    {"lhs": "F", "rhs": [{"terminal": "id"}]}
+  ]
+}

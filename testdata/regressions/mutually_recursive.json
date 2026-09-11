@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "left": {
+      "anyOf": [
+        {"const": null},
+        {
+          "type": "array",
+          "prefixItems": [{"$ref": "#/$defs/right"}],
+          "items": false
+        }
+      ]
+    },
+    "right": {
+      "anyOf": [
+        {"const": null},
+        {
+          "type": "array",
+          "prefixItems": [{"$ref": "#/$defs/left"}],
+          "items": false
+        }
+      ]
+    }
+  },
+  "$ref": "#/$defs/left"
+}

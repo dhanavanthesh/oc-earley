@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "node": {
+      "anyOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {"$ref": "#/$defs/node"}
+          ],
+          "items": false
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {"$ref": "#/$defs/node"}
+          ],
+          "items": false
+        },
+        {"const": null}
+      ]
+    }
+  },
+  "$ref": "#/$defs/node"
+}
