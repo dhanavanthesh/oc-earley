@@ -118,7 +118,7 @@ pub struct SemanticContract {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CompiledBackend {
-    Dfa(Index),
+    Dfa(Arc<Index>),
     Lalr(Arc<CompiledLalr>),
     Earley(Arc<CompiledEarley>),
 }
@@ -131,7 +131,7 @@ pub struct CompiledSchema {
     pub report: TierReport,
     pub backend: CompiledBackend,
     byte_dfa: Option<Arc<CompiledByteDfa>>,
-    vocabulary: Arc<DerivedVocabulary>,
+    vocabulary: Option<Arc<DerivedVocabulary>>,
 }
 
 enum PreparedBackend {
@@ -187,21 +187,31 @@ impl CompiledSchema {
     ) -> Result<(Self, CompileProfile)> {
         let total_started = Instant::now();
         let mut prepared = prepare(schema, options, policy)?;
-        let trie_started = Instant::now();
-        let derived_vocabulary = Arc::new(DerivedVocabulary::build(vocabulary, &options.limits)?);
-        prepared.profile.vocabulary_trie_ns = elapsed_ns(trie_started);
-        let (backend, byte_dfa, vocabulary_projection_ns) = match prepared.backend {
+        let (backend, byte_dfa, derived_vocabulary, vocabulary_projection_ns) = match prepared
+            .backend
+        {
             PreparedBackend::Dfa(dfa) => {
                 let projection_started = Instant::now();
                 let index = Index::from_certified_dfa(&dfa, vocabulary)?;
                 (
-                    CompiledBackend::Dfa(index),
+                    CompiledBackend::Dfa(Arc::new(index)),
                     Some(Arc::new(dfa)),
+                    None,
                     elapsed_ns(projection_started),
                 )
             }
-            PreparedBackend::Lalr(lalr) => (CompiledBackend::Lalr(lalr), None, 0),
-            PreparedBackend::Earley(earley) => (CompiledBackend::Earley(earley), None, 0),
+            PreparedBackend::Lalr(lalr) => {
+                let trie_started = Instant::now();
+                let vocabulary = Arc::new(DerivedVocabulary::build(vocabulary, &options.limits)?);
+                prepared.profile.vocabulary_trie_ns = elapsed_ns(trie_started);
+                (CompiledBackend::Lalr(lalr), None, Some(vocabulary), 0)
+            }
+            PreparedBackend::Earley(earley) => {
+                let trie_started = Instant::now();
+                let vocabulary = Arc::new(DerivedVocabulary::build(vocabulary, &options.limits)?);
+                prepared.profile.vocabulary_trie_ns = elapsed_ns(trie_started);
+                (CompiledBackend::Earley(earley), None, Some(vocabulary), 0)
+            }
         };
         prepared.profile.vocabulary_projection_ns = vocabulary_projection_ns;
         prepared.profile.total_ns = elapsed_ns(total_started);
@@ -927,18 +937,33 @@ impl Guide {
         limits: RuntimeLimits,
     ) -> std::result::Result<Self, crate::error::RuntimeError> {
         validate_rollback_limit(max_rollback, &limits)?;
-        let vocabulary = Arc::clone(&compiled.vocabulary);
-        let eos_token_id = vocabulary.eos_token_id;
-        let vocab_size = vocabulary.vocab_size;
-        let mask_words = vocabulary.mask_words;
-        let runtime = match &compiled.backend {
-            CompiledBackend::Dfa(index) => GuideRuntime::Dfa {
-                index: Arc::new(index.clone()),
-                state: index.initial_state(),
-            },
-            CompiledBackend::Lalr(_) | CompiledBackend::Earley(_) => GuideRuntime::Structural {
-                recognizer: Box::new(compiled.recognizer(limits.clone())?),
-            },
+        let (runtime, vocabulary, eos_token_id, vocab_size, mask_words) = match &compiled.backend {
+            CompiledBackend::Dfa(index) => (
+                GuideRuntime::Dfa {
+                    index: Arc::clone(index),
+                    state: index.initial_state(),
+                },
+                None,
+                index.eos_token_id(),
+                index.vocab_size(),
+                index.vocab_size().div_ceil(32),
+            ),
+            CompiledBackend::Lalr(_) | CompiledBackend::Earley(_) => {
+                let vocabulary = Arc::clone(compiled.vocabulary.as_ref().ok_or(
+                    crate::error::RuntimeError::InternalInvariant {
+                        message: "structural backend has no derived vocabulary",
+                    },
+                )?);
+                (
+                    GuideRuntime::Structural {
+                        recognizer: Box::new(compiled.recognizer(limits.clone())?),
+                    },
+                    Some(Arc::clone(&vocabulary)),
+                    vocabulary.eos_token_id,
+                    vocabulary.vocab_size,
+                    vocabulary.mask_words,
+                )
+            }
         };
         let initial = match &runtime {
             GuideRuntime::Dfa { state, .. } => GuideCheckpoint::Dfa {
@@ -962,7 +987,7 @@ impl Guide {
         })?;
         Ok(Self {
             runtime,
-            vocabulary: Some(vocabulary),
+            vocabulary,
             eos_token_id,
             vocab_size,
             mask_words,
@@ -1752,7 +1777,35 @@ mod tests {
             + profile.vocabulary_trie_ns;
 
         assert_eq!(compiled.report.selected_backend, BackendKind::WholeDfa);
+        assert!(compiled.vocabulary.is_none());
+        assert_eq!(profile.vocabulary_trie_ns, 0);
         assert!(profile.total_ns >= accounted);
+    }
+
+    #[test]
+    fn whole_dfa_guides_share_the_compiled_index() {
+        let vocabulary = vocabulary(&[(r#""done""#, 0)], 1);
+        let compiled = CompiledSchema::compile(
+            br#"{"const":"done"}"#,
+            &vocabulary,
+            &CompileOptions::default(),
+        )
+        .unwrap();
+        let first = compiled.guide(1, RuntimeLimits::default()).unwrap();
+        let second = compiled.guide(1, RuntimeLimits::default()).unwrap();
+
+        match (&first.runtime, &second.runtime) {
+            (
+                GuideRuntime::Dfa {
+                    index: first_index, ..
+                },
+                GuideRuntime::Dfa {
+                    index: second_index,
+                    ..
+                },
+            ) => assert!(Arc::ptr_eq(first_index, second_index)),
+            _ => panic!("expected whole-DFA guides"),
+        }
     }
 
     #[test]
@@ -2189,6 +2242,8 @@ mod tests {
             } else {
                 let bytes = compiled
                     .vocabulary
+                    .as_ref()
+                    .unwrap()
                     .shared_bytes(token_id)
                     .unwrap_or_else(|| Arc::from([]));
                 let mut recognizer = compiled.recognizer(RuntimeLimits::default()).unwrap();

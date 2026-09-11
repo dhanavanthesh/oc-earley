@@ -8,7 +8,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::error::{CompileError, CompileStage};
 
-pub const COMPILED_FORMAT_VERSION: u32 = 2;
+pub const COMPILED_FORMAT_VERSION: u32 = 3;
 pub const PROFILE_ID: &str = "K1";
 pub const CANONICAL_POLICY_ID: &str = "oc-earley-json-compact-v1";
 pub const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";

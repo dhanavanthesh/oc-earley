@@ -17,7 +17,7 @@ use tokenizers::FromPretrainedParameters;
 use crate::index::Index;
 use crate::json_schema;
 use crate::prelude::*;
-use crate::schema::COMPILED_FORMAT_VERSION;
+use crate::schema::{CANONICAL_POLICY_ID, COMPILED_FORMAT_VERSION, DRAFT_2020_12, PROFILE_ID};
 
 const SERIAL_MAGIC: &[u8; 8] = b"OCEARLEY";
 const SERIAL_HEADER_LEN: usize = 13;
@@ -111,19 +111,167 @@ macro_rules! type_name {
     };
 }
 
-#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(Clone, Debug, PartialEq)]
 enum GuideSource {
+    Index(Arc<Index>),
+    Schema {
+        schema: Arc<[u8]>,
+        vocabulary: Arc<Vocabulary>,
+        expected_backend: u8,
+        dialect: Arc<str>,
+        profile: Arc<str>,
+        canonical_policy: Arc<str>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+enum GuideSourcePayload {
     Index(Index),
     Schema {
         schema: Vec<u8>,
         vocabulary: Vocabulary,
         expected_backend: u8,
+        dialect: String,
+        profile: String,
+        canonical_policy: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+struct RuntimeLimitsPayload {
+    max_input_bytes: usize,
+    max_parse_stack: usize,
+    max_chart_columns: usize,
+    max_items_per_column: usize,
+    max_total_items: usize,
+    max_active_scans: usize,
+    max_leo_items: usize,
+    max_checkpoint_history: usize,
+    max_mask_trie_edges: usize,
+    max_committed_tokens: usize,
+}
+
+impl From<&crate::schema::RuntimeLimits> for RuntimeLimitsPayload {
+    fn from(limits: &crate::schema::RuntimeLimits) -> Self {
+        Self {
+            max_input_bytes: limits.max_input_bytes,
+            max_parse_stack: limits.max_parse_stack,
+            max_chart_columns: limits.max_chart_columns,
+            max_items_per_column: limits.max_items_per_column,
+            max_total_items: limits.max_total_items,
+            max_active_scans: limits.max_active_scans,
+            max_leo_items: limits.max_leo_items,
+            max_checkpoint_history: limits.max_checkpoint_history,
+            max_mask_trie_edges: limits.max_mask_trie_edges,
+            max_committed_tokens: limits.max_committed_tokens,
+        }
+    }
+}
+
+impl From<RuntimeLimitsPayload> for crate::schema::RuntimeLimits {
+    fn from(limits: RuntimeLimitsPayload) -> Self {
+        Self {
+            max_input_bytes: limits.max_input_bytes,
+            max_parse_stack: limits.max_parse_stack,
+            max_chart_columns: limits.max_chart_columns,
+            max_items_per_column: limits.max_items_per_column,
+            max_total_items: limits.max_total_items,
+            max_active_scans: limits.max_active_scans,
+            max_leo_items: limits.max_leo_items,
+            max_checkpoint_history: limits.max_checkpoint_history,
+            max_mask_trie_edges: limits.max_mask_trie_edges,
+            max_committed_tokens: limits.max_committed_tokens,
+        }
+    }
+}
+
+fn validate_serialized_runtime_limits(limits: &crate::schema::RuntimeLimits) -> PyResult<()> {
+    let maximum = crate::schema::RuntimeLimits::default();
+    let resources = [
+        (
+            "input bytes",
+            limits.max_input_bytes,
+            maximum.max_input_bytes,
+        ),
+        (
+            "parse stack",
+            limits.max_parse_stack,
+            maximum.max_parse_stack,
+        ),
+        (
+            "chart columns",
+            limits.max_chart_columns,
+            maximum.max_chart_columns,
+        ),
+        (
+            "column items",
+            limits.max_items_per_column,
+            maximum.max_items_per_column,
+        ),
+        (
+            "total items",
+            limits.max_total_items,
+            maximum.max_total_items,
+        ),
+        (
+            "active scans",
+            limits.max_active_scans,
+            maximum.max_active_scans,
+        ),
+        ("Leo items", limits.max_leo_items, maximum.max_leo_items),
+        (
+            "checkpoint history",
+            limits.max_checkpoint_history,
+            maximum.max_checkpoint_history,
+        ),
+        (
+            "mask trie edges",
+            limits.max_mask_trie_edges,
+            maximum.max_mask_trie_edges,
+        ),
+        (
+            "committed tokens",
+            limits.max_committed_tokens,
+            maximum.max_committed_tokens,
+        ),
+    ];
+    for (resource, observed, limit) in resources {
+        if observed > limit {
+            return Err(PyValueError::new_err(format!(
+                "Serialized Guide runtime limit for {resource} exceeds {limit}: {observed}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+impl GuideSource {
+    fn payload(&self) -> GuideSourcePayload {
+        match self {
+            Self::Index(index) => GuideSourcePayload::Index((**index).clone()),
+            Self::Schema {
+                schema,
+                vocabulary,
+                expected_backend,
+                dialect,
+                profile,
+                canonical_policy,
+            } => GuideSourcePayload::Schema {
+                schema: schema.to_vec(),
+                vocabulary: (**vocabulary).clone(),
+                expected_backend: *expected_backend,
+                dialect: dialect.to_string(),
+                profile: profile.to_string(),
+                canonical_policy: canonical_policy.to_string(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 struct GuidePayload {
-    source: GuideSource,
+    source: GuideSourcePayload,
+    runtime_limits: RuntimeLimitsPayload,
     max_rollback: usize,
     committed_token_ids: Vec<TokenId>,
     finished: bool,
@@ -135,6 +283,7 @@ struct GuidePayload {
 pub struct PyGuide {
     inner: Guide,
     source: GuideSource,
+    runtime_limits: crate::schema::RuntimeLimits,
     max_rollback: usize,
 }
 
@@ -142,6 +291,7 @@ impl PartialEq for PyGuide {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
             && self.max_rollback == other.max_rollback
+            && self.runtime_limits == other.runtime_limits
             && self.inner.committed_token_ids() == other.inner.committed_token_ids()
             && self.inner.is_finished() == other.inner.is_finished()
             && self.inner.state_fingerprint() == other.inner.state_fingerprint()
@@ -150,23 +300,35 @@ impl PartialEq for PyGuide {
 
 impl PyGuide {
     fn from_compiled(compiled: &PyCompiledSchema, max_rollback: usize) -> PyResult<Self> {
+        let runtime_limits = crate::schema::RuntimeLimits::default();
         let inner = compiled
             .compiled
-            .guide(max_rollback, crate::schema::RuntimeLimits::default())
+            .guide(max_rollback, runtime_limits.clone())
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(Self {
             inner,
             source: GuideSource::Schema {
-                schema: compiled.schema.clone(),
-                vocabulary: compiled.vocabulary.clone(),
+                schema: Arc::clone(&compiled.schema),
+                vocabulary: Arc::clone(&compiled.vocabulary),
                 expected_backend: backend_code(compiled.compiled.report.selected_backend),
+                dialect: Arc::from(compiled.compiled.semantic_contract.dialect.as_str()),
+                profile: Arc::from(compiled.compiled.semantic_contract.profile.as_str()),
+                canonical_policy: Arc::from(
+                    compiled
+                        .compiled
+                        .semantic_contract
+                        .canonical_policy
+                        .as_str(),
+                ),
             },
+            runtime_limits,
             max_rollback,
         })
     }
 
     fn rebuild(payload: GuidePayload) -> PyResult<Self> {
-        let runtime_limits = crate::schema::RuntimeLimits::default();
+        let runtime_limits: crate::schema::RuntimeLimits = payload.runtime_limits.into();
+        validate_serialized_runtime_limits(&runtime_limits)?;
         if payload.max_rollback > runtime_limits.max_checkpoint_history
             || payload.committed_token_ids.len() > runtime_limits.max_committed_tokens
         {
@@ -174,34 +336,65 @@ impl PyGuide {
                 "Guide history exceeds the configured decoding limits",
             ));
         }
-        let mut guide = match &payload.source {
-            GuideSource::Index(index) => Self {
-                inner: Guide::from_index(Arc::new(index.clone()), payload.max_rollback)
-                    .map_err(|error| PyValueError::new_err(error.to_string()))?,
-                source: payload.source.clone(),
-                max_rollback: payload.max_rollback,
-            },
-            GuideSource::Schema {
+        let mut guide = match payload.source {
+            GuideSourcePayload::Index(index) => {
+                let index = Arc::new(index);
+                Self {
+                    inner: Guide::from_index(Arc::clone(&index), payload.max_rollback)
+                        .map_err(|error| PyValueError::new_err(error.to_string()))?,
+                    source: GuideSource::Index(index),
+                    runtime_limits,
+                    max_rollback: payload.max_rollback,
+                }
+            }
+            GuideSourcePayload::Schema {
                 schema,
                 vocabulary,
                 expected_backend,
+                dialect,
+                profile,
+                canonical_policy,
             } => {
+                if dialect != DRAFT_2020_12
+                    || profile != PROFILE_ID
+                    || canonical_policy != CANONICAL_POLICY_ID
+                {
+                    return Err(PyValueError::new_err(
+                        "Serialized Guide semantic contract is incompatible",
+                    ));
+                }
+                let schema: Arc<[u8]> = schema.into();
+                let vocabulary = Arc::new(vocabulary);
                 let compiled =
-                    CompiledSchema::compile(schema, vocabulary, &CompileOptions::default())?;
+                    CompiledSchema::compile(&schema, &vocabulary, &CompileOptions::default())?;
+                let contract = &compiled.semantic_contract;
+                if contract.dialect != dialect
+                    || contract.profile != profile
+                    || contract.canonical_policy != canonical_policy
+                {
+                    return Err(PyValueError::new_err(
+                        "Serialized Guide semantic contract is incompatible",
+                    ));
+                }
                 let actual = backend_code(compiled.report.selected_backend);
-                if actual != *expected_backend {
+                if actual != expected_backend {
                     return Err(PyValueError::new_err(
                         "Serialized Guide selected a different backend during reconstruction",
                     ));
                 }
                 Self {
                     inner: compiled
-                        .guide(
-                            payload.max_rollback,
-                            crate::schema::RuntimeLimits::default(),
-                        )
+                        .guide(payload.max_rollback, runtime_limits.clone())
                         .map_err(|error| PyValueError::new_err(error.to_string()))?,
-                    source: payload.source.clone(),
+                    source: GuideSource::Schema {
+                        schema,
+                        vocabulary,
+                        expected_backend,
+                        dialect: dialect.into(),
+                        profile: profile.into(),
+                        canonical_policy: canonical_policy.into(),
+                    },
+                    runtime_limits,
                     max_rollback: payload.max_rollback,
                 }
             }
@@ -230,7 +423,8 @@ impl PyGuide {
         Ok(Self {
             inner: Guide::from_index(Arc::clone(&index.0), max_rollback)
                 .map_err(|error| PyValueError::new_err(error.to_string()))?,
-            source: GuideSource::Index((*index.0).clone()),
+            source: GuideSource::Index(Arc::clone(&index.0)),
+            runtime_limits: crate::schema::RuntimeLimits::default(),
             max_rollback,
         })
     }
@@ -403,7 +597,8 @@ impl PyGuide {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("Guide")?;
             let payload = GuidePayload {
-                source: self.source.clone(),
+                source: self.source.payload(),
+                runtime_limits: RuntimeLimitsPayload::from(&self.runtime_limits),
                 max_rollback: self.max_rollback,
                 committed_token_ids: self.inner.committed_token_ids().to_vec(),
                 finished: self.inner.is_finished(),
@@ -671,9 +866,9 @@ struct CompiledSchemaPayload {
 )]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PyCompiledSchema {
-    compiled: CompiledSchema,
-    schema: Vec<u8>,
-    vocabulary: Vocabulary,
+    compiled: Arc<CompiledSchema>,
+    schema: Arc<[u8]>,
+    vocabulary: Arc<Vocabulary>,
 }
 
 #[pymethods]
@@ -685,13 +880,13 @@ impl PyCompiledSchema {
         schema: &Bound<'_, PyAny>,
         vocabulary: &PyVocabulary,
     ) -> PyResult<Self> {
-        let schema = schema_bytes(schema)?;
-        let inner_vocabulary = vocabulary.0.clone();
+        let schema: Arc<[u8]> = schema_bytes(schema)?.into();
+        let inner_vocabulary = Arc::new(vocabulary.0.clone());
         let compiled = py.detach(|| {
             CompiledSchema::compile(&schema, &inner_vocabulary, &CompileOptions::default())
         })?;
         Ok(Self {
-            compiled,
+            compiled: Arc::new(compiled),
             schema,
             vocabulary: inner_vocabulary,
         })
@@ -759,8 +954,8 @@ impl PyCompiledSchema {
         Python::attach(|py| {
             let cls = PyModule::import(py, "oc_earley")?.getattr("CompiledSchema")?;
             let payload = CompiledSchemaPayload {
-                schema: self.schema.clone(),
-                vocabulary: self.vocabulary.clone(),
+                schema: self.schema.to_vec(),
+                vocabulary: (*self.vocabulary).clone(),
             };
             let binary_data =
                 encode_object(&payload, ObjectKind::CompiledSchema, "CompiledSchema")?;
@@ -780,9 +975,9 @@ impl PyCompiledSchema {
             )
         })?;
         Ok(Self {
-            compiled,
-            schema: payload.schema,
-            vocabulary: payload.vocabulary,
+            compiled: Arc::new(compiled),
+            schema: payload.schema.into(),
+            vocabulary: Arc::new(payload.vocabulary),
         })
     }
 }
