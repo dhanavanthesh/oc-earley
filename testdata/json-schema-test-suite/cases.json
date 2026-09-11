@@ -1,0 +1,1654 @@
+[
+  {
+    "source": "tests/draft2020-12/anyOf.json",
+    "index": 4,
+    "group": {
+      "description": "anyOf with boolean schemas, all false",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          false,
+          false
+        ]
+      },
+      "tests": [
+        {
+          "description": "any value is invalid",
+          "data": "foo",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/anyOf.json",
+    "index": 7,
+    "group": {
+      "description": "nested anyOf, to check validation semantics",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "anyOf": [
+              {
+                "type": "null"
+              }
+            ]
+          }
+        ]
+      },
+      "tests": [
+        {
+          "description": "null is valid",
+          "data": null,
+          "valid": true
+        },
+        {
+          "description": "anything non-null is invalid",
+          "data": 123,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/boolean_schema.json",
+    "index": 1,
+    "group": {
+      "description": "boolean schema 'false'",
+      "schema": false,
+      "tests": [
+        {
+          "description": "number is invalid",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "string is invalid",
+          "data": "foo",
+          "valid": false
+        },
+        {
+          "description": "boolean true is invalid",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "boolean false is invalid",
+          "data": false,
+          "valid": false
+        },
+        {
+          "description": "null is invalid",
+          "data": null,
+          "valid": false
+        },
+        {
+          "description": "object is invalid",
+          "data": {
+            "foo": "bar"
+          },
+          "valid": false
+        },
+        {
+          "description": "empty object is invalid",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "array is invalid",
+          "data": [
+            "foo"
+          ],
+          "valid": false
+        },
+        {
+          "description": "empty array is invalid",
+          "data": [],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 0,
+    "group": {
+      "description": "const validation",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": 2
+      },
+      "tests": [
+        {
+          "description": "same value is valid",
+          "data": 2,
+          "valid": true
+        },
+        {
+          "description": "another value is invalid",
+          "data": 5,
+          "valid": false
+        },
+        {
+          "description": "another type is invalid",
+          "data": "a",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 1,
+    "group": {
+      "description": "const with object",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": {
+          "foo": "bar",
+          "baz": "bax"
+        }
+      },
+      "tests": [
+        {
+          "description": "same object is valid",
+          "data": {
+            "foo": "bar",
+            "baz": "bax"
+          },
+          "valid": true
+        },
+        {
+          "description": "same object with different property order is valid",
+          "data": {
+            "baz": "bax",
+            "foo": "bar"
+          },
+          "valid": true
+        },
+        {
+          "description": "another object is invalid",
+          "data": {
+            "foo": "bar"
+          },
+          "valid": false
+        },
+        {
+          "description": "another type is invalid",
+          "data": [
+            1,
+            2
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 2,
+    "group": {
+      "description": "const with array",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": [
+          {
+            "foo": "bar"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "description": "same array is valid",
+          "data": [
+            {
+              "foo": "bar"
+            }
+          ],
+          "valid": true
+        },
+        {
+          "description": "another array item is invalid",
+          "data": [
+            2
+          ],
+          "valid": false
+        },
+        {
+          "description": "array with additional items is invalid",
+          "data": [
+            1,
+            2,
+            3
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 3,
+    "group": {
+      "description": "const with null",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": null
+      },
+      "tests": [
+        {
+          "description": "null is valid",
+          "data": null,
+          "valid": true
+        },
+        {
+          "description": "not null is invalid",
+          "data": 0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 4,
+    "group": {
+      "description": "const with false does not match 0",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": false
+      },
+      "tests": [
+        {
+          "description": "false is valid",
+          "data": false,
+          "valid": true
+        },
+        {
+          "description": "integer zero is invalid",
+          "data": 0,
+          "valid": false
+        },
+        {
+          "description": "float zero is invalid",
+          "data": 0.0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 5,
+    "group": {
+      "description": "const with true does not match 1",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": true
+      },
+      "tests": [
+        {
+          "description": "true is valid",
+          "data": true,
+          "valid": true
+        },
+        {
+          "description": "integer one is invalid",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "float one is invalid",
+          "data": 1.0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 6,
+    "group": {
+      "description": "const with [false] does not match [0]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": [
+          false
+        ]
+      },
+      "tests": [
+        {
+          "description": "[false] is valid",
+          "data": [
+            false
+          ],
+          "valid": true
+        },
+        {
+          "description": "[0] is invalid",
+          "data": [
+            0
+          ],
+          "valid": false
+        },
+        {
+          "description": "[0.0] is invalid",
+          "data": [
+            0.0
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 7,
+    "group": {
+      "description": "const with [true] does not match [1]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": [
+          true
+        ]
+      },
+      "tests": [
+        {
+          "description": "[true] is valid",
+          "data": [
+            true
+          ],
+          "valid": true
+        },
+        {
+          "description": "[1] is invalid",
+          "data": [
+            1
+          ],
+          "valid": false
+        },
+        {
+          "description": "[1.0] is invalid",
+          "data": [
+            1.0
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 8,
+    "group": {
+      "description": "const with {\"a\": false} does not match {\"a\": 0}",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": {
+          "a": false
+        }
+      },
+      "tests": [
+        {
+          "description": "{\"a\": false} is valid",
+          "data": {
+            "a": false
+          },
+          "valid": true
+        },
+        {
+          "description": "{\"a\": 0} is invalid",
+          "data": {
+            "a": 0
+          },
+          "valid": false
+        },
+        {
+          "description": "{\"a\": 0.0} is invalid",
+          "data": {
+            "a": 0.0
+          },
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 9,
+    "group": {
+      "description": "const with {\"a\": true} does not match {\"a\": 1}",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": {
+          "a": true
+        }
+      },
+      "tests": [
+        {
+          "description": "{\"a\": true} is valid",
+          "data": {
+            "a": true
+          },
+          "valid": true
+        },
+        {
+          "description": "{\"a\": 1} is invalid",
+          "data": {
+            "a": 1
+          },
+          "valid": false
+        },
+        {
+          "description": "{\"a\": 1.0} is invalid",
+          "data": {
+            "a": 1.0
+          },
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 10,
+    "group": {
+      "description": "const with 0 does not match other zero-like types",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": 0
+      },
+      "tests": [
+        {
+          "description": "false is invalid",
+          "data": false,
+          "valid": false
+        },
+        {
+          "description": "integer zero is valid",
+          "data": 0,
+          "valid": true
+        },
+        {
+          "description": "float zero is valid",
+          "data": 0.0,
+          "valid": true
+        },
+        {
+          "description": "empty object is invalid",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "empty array is invalid",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "empty string is invalid",
+          "data": "",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 11,
+    "group": {
+      "description": "const with 1 does not match true",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": 1
+      },
+      "tests": [
+        {
+          "description": "true is invalid",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "integer one is valid",
+          "data": 1,
+          "valid": true
+        },
+        {
+          "description": "float one is valid",
+          "data": 1.0,
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 12,
+    "group": {
+      "description": "const with -2.0 matches integer and float types",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": -2.0
+      },
+      "tests": [
+        {
+          "description": "integer -2 is valid",
+          "data": -2,
+          "valid": true
+        },
+        {
+          "description": "integer 2 is invalid",
+          "data": 2,
+          "valid": false
+        },
+        {
+          "description": "float -2.0 is valid",
+          "data": -2.0,
+          "valid": true
+        },
+        {
+          "description": "float 2.0 is invalid",
+          "data": 2.0,
+          "valid": false
+        },
+        {
+          "description": "float -2.00001 is invalid",
+          "data": -2.00001,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 13,
+    "group": {
+      "description": "float and integers are equal up to 64-bit representation limits",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": 9007199254740992
+      },
+      "tests": [
+        {
+          "description": "integer is valid",
+          "data": 9007199254740992,
+          "valid": true
+        },
+        {
+          "description": "integer minus one is invalid",
+          "data": 9007199254740991,
+          "valid": false
+        },
+        {
+          "description": "float is valid",
+          "data": 9007199254740992.0,
+          "valid": true
+        },
+        {
+          "description": "float minus one is invalid",
+          "data": 9007199254740991.0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 14,
+    "group": {
+      "description": "nul characters in strings",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": "hello\u0000there"
+      },
+      "tests": [
+        {
+          "description": "match string with nul",
+          "data": "hello\u0000there",
+          "valid": true
+        },
+        {
+          "description": "do not match string lacking nul",
+          "data": "hellothere",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 15,
+    "group": {
+      "description": "characters with the same visual representation but different codepoint",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": "μ",
+        "$comment": "U+03BC"
+      },
+      "tests": [
+        {
+          "description": "character uses the same codepoint",
+          "data": "μ",
+          "comment": "U+03BC",
+          "valid": true
+        },
+        {
+          "description": "character looks the same but uses a different codepoint",
+          "data": "µ",
+          "comment": "U+00B5",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/const.json",
+    "index": 16,
+    "group": {
+      "description": "characters with the same visual representation, but different number of codepoints",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "const": "ä",
+        "$comment": "U+00E4"
+      },
+      "tests": [
+        {
+          "description": "character uses the same codepoint",
+          "data": "ä",
+          "comment": "U+00E4",
+          "valid": true
+        },
+        {
+          "description": "character looks the same but uses combining marks",
+          "data": "ä",
+          "comment": "a, U+0308",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 0,
+    "group": {
+      "description": "simple enum validation",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          1,
+          2,
+          3
+        ]
+      },
+      "tests": [
+        {
+          "description": "one of the enum is valid",
+          "data": 1,
+          "valid": true
+        },
+        {
+          "description": "something else is invalid",
+          "data": 4,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 1,
+    "group": {
+      "description": "heterogeneous enum validation",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          6,
+          "foo",
+          [],
+          true,
+          {
+            "foo": 12
+          }
+        ]
+      },
+      "tests": [
+        {
+          "description": "one of the enum is valid",
+          "data": [],
+          "valid": true
+        },
+        {
+          "description": "something else is invalid",
+          "data": null,
+          "valid": false
+        },
+        {
+          "description": "objects are deep compared",
+          "data": {
+            "foo": false
+          },
+          "valid": false
+        },
+        {
+          "description": "valid object matches",
+          "data": {
+            "foo": 12
+          },
+          "valid": true
+        },
+        {
+          "description": "extra properties in object is invalid",
+          "data": {
+            "foo": 12,
+            "boo": 42
+          },
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 2,
+    "group": {
+      "description": "heterogeneous enum-with-null validation",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          6,
+          null
+        ]
+      },
+      "tests": [
+        {
+          "description": "null is valid",
+          "data": null,
+          "valid": true
+        },
+        {
+          "description": "number is valid",
+          "data": 6,
+          "valid": true
+        },
+        {
+          "description": "something else is invalid",
+          "data": "test",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 4,
+    "group": {
+      "description": "enum with escaped characters",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "foo\nbar",
+          "foo\rbar"
+        ]
+      },
+      "tests": [
+        {
+          "description": "member 1 is valid",
+          "data": "foo\nbar",
+          "valid": true
+        },
+        {
+          "description": "member 2 is valid",
+          "data": "foo\rbar",
+          "valid": true
+        },
+        {
+          "description": "another string is invalid",
+          "data": "abc",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 5,
+    "group": {
+      "description": "enum with false does not match 0",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          false
+        ]
+      },
+      "tests": [
+        {
+          "description": "false is valid",
+          "data": false,
+          "valid": true
+        },
+        {
+          "description": "integer zero is invalid",
+          "data": 0,
+          "valid": false
+        },
+        {
+          "description": "float zero is invalid",
+          "data": 0.0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 6,
+    "group": {
+      "description": "enum with [false] does not match [0]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          [
+            false
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "description": "[false] is valid",
+          "data": [
+            false
+          ],
+          "valid": true
+        },
+        {
+          "description": "[0] is invalid",
+          "data": [
+            0
+          ],
+          "valid": false
+        },
+        {
+          "description": "[0.0] is invalid",
+          "data": [
+            0.0
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 7,
+    "group": {
+      "description": "enum with true does not match 1",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          true
+        ]
+      },
+      "tests": [
+        {
+          "description": "true is valid",
+          "data": true,
+          "valid": true
+        },
+        {
+          "description": "integer one is invalid",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "float one is invalid",
+          "data": 1.0,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 8,
+    "group": {
+      "description": "enum with [true] does not match [1]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          [
+            true
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "description": "[true] is valid",
+          "data": [
+            true
+          ],
+          "valid": true
+        },
+        {
+          "description": "[1] is invalid",
+          "data": [
+            1
+          ],
+          "valid": false
+        },
+        {
+          "description": "[1.0] is invalid",
+          "data": [
+            1.0
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 9,
+    "group": {
+      "description": "enum with 0 does not match false",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          0
+        ]
+      },
+      "tests": [
+        {
+          "description": "false is invalid",
+          "data": false,
+          "valid": false
+        },
+        {
+          "description": "integer zero is valid",
+          "data": 0,
+          "valid": true
+        },
+        {
+          "description": "float zero is valid",
+          "data": 0.0,
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 10,
+    "group": {
+      "description": "enum with [0] does not match [false]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          [
+            0
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "description": "[false] is invalid",
+          "data": [
+            false
+          ],
+          "valid": false
+        },
+        {
+          "description": "[0] is valid",
+          "data": [
+            0
+          ],
+          "valid": true
+        },
+        {
+          "description": "[0.0] is valid",
+          "data": [
+            0.0
+          ],
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 11,
+    "group": {
+      "description": "enum with 1 does not match true",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          1
+        ]
+      },
+      "tests": [
+        {
+          "description": "true is invalid",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "integer one is valid",
+          "data": 1,
+          "valid": true
+        },
+        {
+          "description": "float one is valid",
+          "data": 1.0,
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 12,
+    "group": {
+      "description": "enum with [1] does not match [true]",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          [
+            1
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "description": "[true] is invalid",
+          "data": [
+            true
+          ],
+          "valid": false
+        },
+        {
+          "description": "[1] is valid",
+          "data": [
+            1
+          ],
+          "valid": true
+        },
+        {
+          "description": "[1.0] is valid",
+          "data": [
+            1.0
+          ],
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 13,
+    "group": {
+      "description": "nul characters in strings",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "hello\u0000there"
+        ]
+      },
+      "tests": [
+        {
+          "description": "match string with nul",
+          "data": "hello\u0000there",
+          "valid": true
+        },
+        {
+          "description": "do not match string lacking nul",
+          "data": "hellothere",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/enum.json",
+    "index": 15,
+    "group": {
+      "description": "characters with the same visual representation, but different number of codepoints",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "ä"
+        ],
+        "$comment": "U+00E4"
+      },
+      "tests": [
+        {
+          "description": "character uses the same codepoint",
+          "data": "ä",
+          "comment": "U+00E4",
+          "valid": true
+        },
+        {
+          "description": "character looks the same but uses combining marks",
+          "data": "ä",
+          "comment": "a, U+0308",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/items.json",
+    "index": 4,
+    "group": {
+      "description": "nested items",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "tests": [
+        {
+          "description": "valid nested array",
+          "data": [
+            [
+              [
+                [
+                  1
+                ]
+              ],
+              [
+                [
+                  2
+                ],
+                [
+                  3
+                ]
+              ]
+            ],
+            [
+              [
+                [
+                  4
+                ],
+                [
+                  5
+                ],
+                [
+                  6
+                ]
+              ]
+            ]
+          ],
+          "valid": true
+        },
+        {
+          "description": "nested array with invalid type",
+          "data": [
+            [
+              [
+                [
+                  "1"
+                ]
+              ],
+              [
+                [
+                  2
+                ],
+                [
+                  3
+                ]
+              ]
+            ],
+            [
+              [
+                [
+                  4
+                ],
+                [
+                  5
+                ],
+                [
+                  6
+                ]
+              ]
+            ]
+          ],
+          "valid": false
+        },
+        {
+          "description": "not deep enough",
+          "data": [
+            [
+              [
+                1
+              ],
+              [
+                2
+              ],
+              [
+                3
+              ]
+            ],
+            [
+              [
+                4
+              ],
+              [
+                5
+              ],
+              [
+                6
+              ]
+            ]
+          ],
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/ref.json",
+    "index": 4,
+    "group": {
+      "description": "nested refs",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "$ref": "#/$defs/a"
+          },
+          "c": {
+            "$ref": "#/$defs/b"
+          }
+        },
+        "$ref": "#/$defs/c"
+      },
+      "tests": [
+        {
+          "description": "nested ref valid",
+          "data": 5,
+          "valid": true
+        },
+        {
+          "description": "nested ref invalid",
+          "data": "a",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/ref.json",
+    "index": 10,
+    "group": {
+      "description": "$ref to boolean schema false",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/bool",
+        "$defs": {
+          "bool": false
+        }
+      },
+      "tests": [
+        {
+          "description": "any value is invalid",
+          "data": "foo",
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/ref.json",
+    "index": 14,
+    "group": {
+      "description": "naive replacement of $ref with its destination is not correct",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "a_string": {
+            "type": "string"
+          }
+        },
+        "enum": [
+          {
+            "$ref": "#/$defs/a_string"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "description": "do not evaluate the $ref inside the enum, matching any string",
+          "data": "this is a string",
+          "valid": false
+        },
+        {
+          "description": "do not evaluate the $ref inside the enum, definition exact match",
+          "data": {
+            "type": "string"
+          },
+          "valid": false
+        },
+        {
+          "description": "match the enum exactly",
+          "data": {
+            "$ref": "#/$defs/a_string"
+          },
+          "valid": true
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/type.json",
+    "index": 0,
+    "group": {
+      "description": "integer type matches integers",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "integer"
+      },
+      "tests": [
+        {
+          "description": "an integer is an integer",
+          "data": 1,
+          "valid": true
+        },
+        {
+          "description": "a float with zero fractional part is an integer",
+          "data": 1.0,
+          "valid": true
+        },
+        {
+          "description": "a float is not an integer",
+          "data": 1.1,
+          "valid": false
+        },
+        {
+          "description": "a string is not an integer",
+          "data": "foo",
+          "valid": false
+        },
+        {
+          "description": "a string is still not an integer, even if it looks like one",
+          "data": "1",
+          "valid": false
+        },
+        {
+          "description": "an object is not an integer",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "an array is not an integer",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "a boolean is not an integer",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "null is not an integer",
+          "data": null,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/type.json",
+    "index": 1,
+    "group": {
+      "description": "number type matches numbers",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "number"
+      },
+      "tests": [
+        {
+          "description": "an integer is a number",
+          "data": 1,
+          "valid": true
+        },
+        {
+          "description": "a float with zero fractional part is a number (and an integer)",
+          "data": 1.0,
+          "valid": true
+        },
+        {
+          "description": "a float is a number",
+          "data": 1.1,
+          "valid": true
+        },
+        {
+          "description": "a string is not a number",
+          "data": "foo",
+          "valid": false
+        },
+        {
+          "description": "a string is still not a number, even if it looks like one",
+          "data": "1",
+          "valid": false
+        },
+        {
+          "description": "an object is not a number",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "an array is not a number",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "a boolean is not a number",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "null is not a number",
+          "data": null,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/type.json",
+    "index": 2,
+    "group": {
+      "description": "string type matches strings",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "string"
+      },
+      "tests": [
+        {
+          "description": "1 is not a string",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "a float is not a string",
+          "data": 1.1,
+          "valid": false
+        },
+        {
+          "description": "a string is a string",
+          "data": "foo",
+          "valid": true
+        },
+        {
+          "description": "a string is still a string, even if it looks like a number",
+          "data": "1",
+          "valid": true
+        },
+        {
+          "description": "an empty string is still a string",
+          "data": "",
+          "valid": true
+        },
+        {
+          "description": "an object is not a string",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "an array is not a string",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "a boolean is not a string",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "null is not a string",
+          "data": null,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/type.json",
+    "index": 5,
+    "group": {
+      "description": "boolean type matches booleans",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "tests": [
+        {
+          "description": "an integer is not a boolean",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "zero is not a boolean",
+          "data": 0,
+          "valid": false
+        },
+        {
+          "description": "a float is not a boolean",
+          "data": 1.1,
+          "valid": false
+        },
+        {
+          "description": "a string is not a boolean",
+          "data": "foo",
+          "valid": false
+        },
+        {
+          "description": "an empty string is not a boolean",
+          "data": "",
+          "valid": false
+        },
+        {
+          "description": "an object is not a boolean",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "an array is not a boolean",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "true is a boolean",
+          "data": true,
+          "valid": true
+        },
+        {
+          "description": "false is a boolean",
+          "data": false,
+          "valid": true
+        },
+        {
+          "description": "null is not a boolean",
+          "data": null,
+          "valid": false
+        }
+      ]
+    }
+  },
+  {
+    "source": "tests/draft2020-12/type.json",
+    "index": 6,
+    "group": {
+      "description": "null type matches only the null object",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "null"
+      },
+      "tests": [
+        {
+          "description": "an integer is not null",
+          "data": 1,
+          "valid": false
+        },
+        {
+          "description": "a float is not null",
+          "data": 1.1,
+          "valid": false
+        },
+        {
+          "description": "zero is not null",
+          "data": 0,
+          "valid": false
+        },
+        {
+          "description": "a string is not null",
+          "data": "foo",
+          "valid": false
+        },
+        {
+          "description": "an empty string is not null",
+          "data": "",
+          "valid": false
+        },
+        {
+          "description": "an object is not null",
+          "data": {},
+          "valid": false
+        },
+        {
+          "description": "an array is not null",
+          "data": [],
+          "valid": false
+        },
+        {
+          "description": "true is not null",
+          "data": true,
+          "valid": false
+        },
+        {
+          "description": "false is not null",
+          "data": false,
+          "valid": false
+        },
+        {
+          "description": "null is null",
+          "data": null,
+          "valid": true
+        }
+      ]
+    }
+  }
+]
