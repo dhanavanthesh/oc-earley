@@ -1,5 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::mem;
 
+use regex_automata::dfa::{dense, Automaton};
+use regex_automata::nfa::thompson::{self, State, Transition, WhichCaptures};
+use regex_automata::util::primitives::StateID as AutomataStateId;
+use regex_automata::{Anchored, MatchKind};
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 
 use crate::error::{CompileError, CompileStage};
@@ -48,6 +54,9 @@ impl RegularTerminal {
     pub fn reverse_pattern(&self) -> Option<String> {
         match &self.kind {
             RegularTerminalKind::Literal(bytes) => {
+                if !bytes.is_ascii() {
+                    return None;
+                }
                 let reversed: Vec<_> = bytes.iter().rev().copied().collect();
                 Some(regex::escape(&String::from_utf8_lossy(&reversed)))
             }
@@ -571,7 +580,8 @@ fn resource_error(stage: CompileStage, observed: usize, limit: usize) -> Compile
 }
 
 fn to_u32(value: usize, stage: CompileStage) -> Result<u32, CompileError> {
-    u32::try_from(value).map_err(|_| resource_error(stage, value, u32::MAX as usize))
+    let limit = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
+    u32::try_from(value).map_err(|_| resource_error(stage, value, limit))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -945,7 +955,7 @@ pub struct SccCertificate {
     pub failure_reason: Option<CertificateFailureReason>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RegularExpression {
     Empty,
     Epsilon,
@@ -959,33 +969,91 @@ pub enum RegularExpression {
 }
 
 impl RegularExpression {
-    pub fn pattern(&self) -> Option<String> {
-        match self {
-            Self::Empty => None,
-            Self::Epsilon => Some(String::new()),
-            Self::Atom { forward, .. } => Some(forward.clone()),
-            Self::Concat(parts) => {
-                let mut pattern = String::new();
-                for part in parts {
-                    pattern.push_str("(?:");
-                    pattern.push_str(&part.pattern()?);
-                    pattern.push(')');
-                }
-                Some(pattern)
-            }
-            Self::Union(branches) => {
-                let mut pattern = String::from("(?:");
-                for (index, branch) in branches.iter().enumerate() {
-                    if index != 0 {
-                        pattern.push('|');
-                    }
-                    pattern.push_str(&branch.pattern()?);
-                }
-                pattern.push(')');
-                Some(pattern)
-            }
-            Self::Star(expression) => Some(format!("(?:{})*", expression.pattern()?)),
+    pub fn pattern(&self) -> Result<Option<String>, CompileError> {
+        self.pattern_with_limit(usize::MAX)
+    }
+
+    fn pattern_with_limit(&self, limit: usize) -> Result<Option<String>, CompileError> {
+        enum Frame<'a> {
+            Expression(&'a RegularExpression),
+            Text(&'a str),
         }
+
+        fn reserve_frames(
+            stack: &mut Vec<Frame<'_>>,
+            additional: usize,
+            byte_limit: usize,
+        ) -> Result<(), CompileError> {
+            let frames = stack.len().checked_add(additional).ok_or_else(|| {
+                resource_error(CompileStage::NfaConstruction, usize::MAX, byte_limit)
+            })?;
+            let bytes = frames
+                .checked_mul(mem::size_of::<Frame<'_>>())
+                .ok_or_else(|| {
+                    resource_error(CompileStage::NfaConstruction, usize::MAX, byte_limit)
+                })?;
+            enforce_limit(CompileStage::NfaConstruction, bytes, byte_limit)?;
+            stack
+                .try_reserve_exact(additional)
+                .map_err(|_| resource_error(CompileStage::NfaConstruction, bytes, byte_limit))
+        }
+
+        if self == &Self::Empty {
+            return Ok(None);
+        }
+        let mut pattern = String::new();
+        let mut stack = vec![Frame::Expression(self)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Text(text) => append_pattern(&mut pattern, text, limit)?,
+                Frame::Expression(Self::Empty) => {
+                    return Err(CompileError::InternalInvariant {
+                        message: "empty expression remained inside a regular expression",
+                    });
+                }
+                Frame::Expression(Self::Epsilon) => {}
+                Frame::Expression(Self::Atom { forward, .. }) => {
+                    append_pattern(&mut pattern, forward, limit)?;
+                }
+                Frame::Expression(Self::Concat(parts)) => {
+                    let additional = parts.len().checked_mul(3).ok_or_else(|| {
+                        resource_error(CompileStage::NfaConstruction, usize::MAX, limit)
+                    })?;
+                    reserve_frames(&mut stack, additional, limit)?;
+                    for part in parts.iter().rev() {
+                        stack.push(Frame::Text(")"));
+                        stack.push(Frame::Expression(part));
+                        stack.push(Frame::Text("(?:"));
+                    }
+                }
+                Frame::Expression(Self::Union(branches)) => {
+                    let additional = branches
+                        .len()
+                        .checked_mul(2)
+                        .and_then(|frames| frames.checked_add(1))
+                        .ok_or_else(|| {
+                            resource_error(CompileStage::NfaConstruction, usize::MAX, limit)
+                        })?;
+                    reserve_frames(&mut stack, additional, limit)?;
+                    stack.push(Frame::Text(")"));
+                    for (index, branch) in branches.iter().enumerate().rev() {
+                        stack.push(Frame::Expression(branch));
+                        if index != 0 {
+                            stack.push(Frame::Text("|"));
+                        }
+                    }
+                    stack.push(Frame::Text("(?:"));
+                }
+                Frame::Expression(Self::Star(expression)) => {
+                    reserve_frames(&mut stack, 4, limit)?;
+                    stack.push(Frame::Text("*"));
+                    stack.push(Frame::Text(")"));
+                    stack.push(Frame::Expression(expression));
+                    stack.push(Frame::Text("(?:"));
+                }
+            }
+        }
+        Ok(Some(pattern))
     }
 
     fn reversed(&self) -> Option<Self> {
@@ -1013,6 +1081,607 @@ impl RegularExpression {
             Self::Star(expression) => Some(star(expression.reversed()?)),
         }
     }
+}
+
+fn append_pattern(pattern: &mut String, text: &str, limit: usize) -> Result<(), CompileError> {
+    let required = pattern
+        .len()
+        .checked_add(text.len())
+        .ok_or_else(|| resource_error(CompileStage::NfaConstruction, usize::MAX, limit))?;
+    if required > limit {
+        return Err(resource_error(
+            CompileStage::NfaConstruction,
+            required,
+            limit,
+        ));
+    }
+    pattern
+        .try_reserve_exact(text.len())
+        .map_err(|_| resource_error(CompileStage::NfaConstruction, required, limit))?;
+    enforce_limit(CompileStage::NfaConstruction, pattern.capacity(), limit)?;
+    pattern.push_str(text);
+    Ok(())
+}
+
+pub const DEAD_DFA_STATE: u32 = u32::MAX;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledByteDfa {
+    transitions: Vec<[u32; 256]>,
+    accepting: Vec<bool>,
+    live: Vec<bool>,
+    nfa_states: usize,
+    nfa_transitions: usize,
+    memory_bytes: usize,
+}
+
+impl CompiledByteDfa {
+    pub fn compile(
+        expression: &RegularExpression,
+        limits: &CompileLimits,
+        pointer: &crate::schema::SchemaPointer,
+    ) -> Result<Self, CompileError> {
+        Self::compile_configured(expression, limits, pointer, false)
+    }
+
+    fn compile_configured(
+        expression: &RegularExpression,
+        limits: &CompileLimits,
+        pointer: &crate::schema::SchemaPointer,
+        minimize: bool,
+    ) -> Result<Self, CompileError> {
+        if expression == &RegularExpression::Empty {
+            return Self::empty(limits);
+        }
+
+        let nfa_byte_limit = limits
+            .max_nfa_states
+            .checked_mul(mem::size_of::<State>())
+            .and_then(|states| {
+                limits
+                    .max_nfa_transitions
+                    .checked_mul(mem::size_of::<Transition>())
+                    .and_then(|transitions| states.checked_add(transitions))
+            })
+            .ok_or_else(|| {
+                resource_error(
+                    CompileStage::NfaConstruction,
+                    usize::MAX,
+                    limits.max_dfa_bytes,
+                )
+            })?;
+        let pattern = expression.pattern_with_limit(nfa_byte_limit)?.ok_or(
+            CompileError::InternalInvariant {
+                message: "non-empty regular expression rendered as empty language",
+            },
+        )?;
+        let nfa = thompson::NFA::compiler()
+            .configure(
+                thompson::NFA::config()
+                    .which_captures(WhichCaptures::None)
+                    .nfa_size_limit(Some(nfa_byte_limit)),
+            )
+            .build(&pattern)
+            .map_err(|error| {
+                if let Some(limit) = error.size_limit() {
+                    resource_error(
+                        CompileStage::NfaConstruction,
+                        limit.saturating_add(1),
+                        limit,
+                    )
+                } else {
+                    CompileError::AutomatonBuild {
+                        pointer: pointer.clone(),
+                        message: error.to_string(),
+                    }
+                }
+            })?;
+        let nfa_states = nfa.states().len();
+        enforce_limit(
+            CompileStage::NfaConstruction,
+            nfa_states,
+            limits.max_nfa_states,
+        )?;
+        let nfa_transitions = count_nfa_transitions(&nfa, limits.max_nfa_transitions)?;
+
+        let mut builder = dense::Builder::new();
+        builder.configure(
+            dense::Config::new()
+                .match_kind(MatchKind::All)
+                .minimize(minimize)
+                .dfa_size_limit(Some(limits.max_dfa_bytes))
+                .determinize_size_limit(Some(limits.max_dfa_bytes)),
+        );
+        let dfa = builder.build_from_nfa(&nfa).map_err(|error| {
+            if error.is_size_limit_exceeded() {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    limits.max_dfa_bytes.saturating_add(1),
+                    limits.max_dfa_bytes,
+                )
+            } else {
+                CompileError::AutomatonBuild {
+                    pointer: pointer.clone(),
+                    message: error.to_string(),
+                }
+            }
+        })?;
+        enforce_limit(
+            CompileStage::DfaDeterminization,
+            dfa.memory_usage(),
+            limits.max_dfa_bytes,
+        )?;
+        let start =
+            dfa.universal_start_state(Anchored::Yes)
+                .ok_or(CompileError::AutomatonBuild {
+                    pointer: pointer.clone(),
+                    message: "anchored DFA start state is unavailable".to_string(),
+                })?;
+
+        let mut raw_to_stable = FxHashMap::default();
+        raw_to_stable.try_reserve(1).map_err(|_| {
+            resource_error(CompileStage::DfaDeterminization, 1, limits.max_dfa_states)
+        })?;
+        raw_to_stable.insert(start, 0_u32);
+        let mut queue = VecDeque::from([start]);
+        let mut transitions = Vec::new();
+        let mut accepting = Vec::new();
+        while let Some(current) = queue.pop_front() {
+            let expected_id = transitions.len();
+            let actual_id = usize::try_from(raw_to_stable[&current]).map_err(|_| {
+                CompileError::InternalInvariant {
+                    message: "stable DFA state does not fit usize",
+                }
+            })?;
+            if expected_id != actual_id {
+                return Err(CompileError::InternalInvariant {
+                    message: "DFA states were not processed in BFS order",
+                });
+            }
+            ensure_dfa_capacity(expected_id + 1, limits)?;
+            transitions.try_reserve_exact(1).map_err(|_| {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    expected_id + 1,
+                    limits.max_dfa_states,
+                )
+            })?;
+            accepting.try_reserve_exact(1).map_err(|_| {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    expected_id + 1,
+                    limits.max_dfa_states,
+                )
+            })?;
+
+            let mut row = [DEAD_DFA_STATE; 256];
+            for byte in 0_u8..=u8::MAX {
+                let next = dfa.next_state(current, byte);
+                if dfa.is_dead_state(next) || dfa.is_quit_state(next) {
+                    continue;
+                }
+                let stable = if let Some(stable) = raw_to_stable.get(&next) {
+                    *stable
+                } else {
+                    let next_id = u32::try_from(raw_to_stable.len()).map_err(|_| {
+                        resource_error(
+                            CompileStage::DfaDeterminization,
+                            raw_to_stable.len(),
+                            limits.max_dfa_states,
+                        )
+                    })?;
+                    enforce_limit(
+                        CompileStage::DfaDeterminization,
+                        raw_to_stable.len() + 1,
+                        limits.max_dfa_states,
+                    )?;
+                    raw_to_stable.try_reserve(1).map_err(|_| {
+                        resource_error(
+                            CompileStage::DfaDeterminization,
+                            raw_to_stable.len() + 1,
+                            limits.max_dfa_states,
+                        )
+                    })?;
+                    raw_to_stable.insert(next, next_id);
+                    queue.try_reserve(1).map_err(|_| {
+                        resource_error(
+                            CompileStage::DfaDeterminization,
+                            raw_to_stable.len(),
+                            limits.max_dfa_states,
+                        )
+                    })?;
+                    queue.push_back(next);
+                    next_id
+                };
+                row[usize::from(byte)] = stable;
+            }
+            transitions.push(row);
+            accepting.push(dfa.is_match_state(dfa.next_eoi_state(current)));
+        }
+
+        drop(dfa);
+        drop(nfa);
+        let live = compute_liveness(&transitions, &accepting, limits)?;
+        let memory_bytes = allocated_dfa_bytes(&transitions, &accepting, &live)?;
+        enforce_limit(
+            CompileStage::DfaDeterminization,
+            memory_bytes,
+            limits.max_dfa_bytes,
+        )?;
+        Ok(Self {
+            transitions,
+            accepting,
+            live,
+            nfa_states,
+            nfa_transitions,
+            memory_bytes,
+        })
+    }
+
+    fn empty(limits: &CompileLimits) -> Result<Self, CompileError> {
+        ensure_dfa_capacity(1, limits)?;
+        Ok(Self {
+            transitions: vec![[DEAD_DFA_STATE; 256]],
+            accepting: vec![false],
+            live: vec![false],
+            nfa_states: 1,
+            nfa_transitions: 0,
+            memory_bytes: minimum_dfa_bytes(1)?,
+        })
+    }
+
+    #[must_use]
+    pub fn start_state(&self) -> u32 {
+        0
+    }
+
+    #[must_use]
+    pub fn next_state(&self, state: u32, byte: u8) -> u32 {
+        usize::try_from(state)
+            .ok()
+            .and_then(|state| self.transitions.get(state))
+            .map_or(DEAD_DFA_STATE, |row| row[usize::from(byte)])
+    }
+
+    #[must_use]
+    pub fn is_dead(&self, state: u32) -> bool {
+        state == DEAD_DFA_STATE
+            || usize::try_from(state).map_or(true, |state| state >= self.transitions.len())
+    }
+
+    #[must_use]
+    pub fn is_accepting(&self, state: u32) -> bool {
+        usize::try_from(state)
+            .ok()
+            .and_then(|state| self.accepting.get(state))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn is_live(&self, state: u32) -> bool {
+        usize::try_from(state)
+            .ok()
+            .and_then(|state| self.live.get(state))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn state_count(&self) -> usize {
+        self.transitions.len()
+    }
+
+    #[must_use]
+    pub fn nfa_state_count(&self) -> usize {
+        self.nfa_states
+    }
+
+    #[must_use]
+    pub fn nfa_transition_count(&self) -> usize {
+        self.nfa_transitions
+    }
+
+    #[must_use]
+    pub fn memory_bytes(&self) -> usize {
+        self.memory_bytes
+    }
+
+    #[must_use]
+    pub fn accepts(&self, bytes: &[u8]) -> bool {
+        let mut state = self.start_state();
+        for byte in bytes {
+            state = self.next_state(state, *byte);
+            if self.is_dead(state) {
+                return false;
+            }
+        }
+        self.is_accepting(state)
+    }
+}
+
+fn count_nfa_transitions(nfa: &thompson::NFA, limit: usize) -> Result<usize, CompileError> {
+    let mut count = 0_usize;
+    for state in nfa.states() {
+        let additional = match state {
+            State::ByteRange { .. } | State::Look { .. } | State::Capture { .. } => 1,
+            State::Sparse(transitions) => transitions.transitions.len(),
+            State::Dense(transitions) => transitions
+                .transitions
+                .iter()
+                .filter(|state| **state != AutomataStateId::ZERO)
+                .count(),
+            State::Union { alternates } => alternates.len(),
+            State::BinaryUnion { .. } => 2,
+            State::Fail | State::Match { .. } => 0,
+        };
+        count = count
+            .checked_add(additional)
+            .ok_or_else(|| resource_error(CompileStage::NfaConstruction, usize::MAX, limit))?;
+        enforce_limit(CompileStage::NfaConstruction, count, limit)?;
+    }
+    Ok(count)
+}
+
+fn minimum_dfa_bytes(states: usize) -> Result<usize, CompileError> {
+    states
+        .checked_mul(mem::size_of::<[u32; 256]>() + 2 * mem::size_of::<bool>())
+        .ok_or(CompileError::ResourceLimitExceeded {
+            stage: CompileStage::DfaDeterminization,
+            observed: usize::MAX,
+            limit: usize::MAX,
+        })
+}
+
+fn allocated_dfa_bytes(
+    transitions: &Vec<[u32; 256]>,
+    accepting: &Vec<bool>,
+    live: &Vec<bool>,
+) -> Result<usize, CompileError> {
+    transitions
+        .capacity()
+        .checked_mul(mem::size_of::<[u32; 256]>())
+        .and_then(|bytes| {
+            accepting
+                .capacity()
+                .checked_mul(mem::size_of::<bool>())
+                .and_then(|accepting| bytes.checked_add(accepting))
+        })
+        .and_then(|bytes| {
+            live.capacity()
+                .checked_mul(mem::size_of::<bool>())
+                .and_then(|live| bytes.checked_add(live))
+        })
+        .ok_or(CompileError::ResourceLimitExceeded {
+            stage: CompileStage::DfaDeterminization,
+            observed: usize::MAX,
+            limit: usize::MAX,
+        })
+}
+
+fn ensure_dfa_capacity(states: usize, limits: &CompileLimits) -> Result<(), CompileError> {
+    enforce_limit(
+        CompileStage::DfaDeterminization,
+        states,
+        limits.max_dfa_states,
+    )?;
+    let bytes = minimum_dfa_bytes(states)?;
+    enforce_limit(
+        CompileStage::DfaDeterminization,
+        bytes,
+        limits.max_dfa_bytes,
+    )
+}
+
+fn compute_liveness(
+    transitions: &Vec<[u32; 256]>,
+    accepting: &Vec<bool>,
+    limits: &CompileLimits,
+) -> Result<Vec<bool>, CompileError> {
+    if transitions.len() != accepting.len() {
+        return Err(CompileError::InternalInvariant {
+            message: "DFA state and acceptance tables have different lengths",
+        });
+    }
+    let state_count = transitions.len();
+    let mut predecessor_counts = Vec::new();
+    predecessor_counts
+        .try_reserve_exact(state_count)
+        .map_err(|_| {
+            resource_error(
+                CompileStage::DfaDeterminization,
+                state_count,
+                limits.max_dfa_states,
+            )
+        })?;
+    predecessor_counts.resize(state_count, 0_usize);
+    let mut edge_count = 0_usize;
+    for row in transitions {
+        let mut targets = *row;
+        targets.sort_unstable();
+        let mut previous = DEAD_DFA_STATE;
+        for target in targets {
+            if target == DEAD_DFA_STATE || target == previous {
+                continue;
+            }
+            previous = target;
+            let target = usize::try_from(target).map_err(|_| CompileError::InternalInvariant {
+                message: "DFA target state does not fit usize",
+            })?;
+            let count =
+                predecessor_counts
+                    .get_mut(target)
+                    .ok_or(CompileError::InternalInvariant {
+                        message: "DFA transition target is out of range",
+                    })?;
+            *count = count.checked_add(1).ok_or_else(|| {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    usize::MAX,
+                    limits.max_dfa_bytes,
+                )
+            })?;
+            edge_count = edge_count.checked_add(1).ok_or_else(|| {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    usize::MAX,
+                    limits.max_dfa_bytes,
+                )
+            })?;
+        }
+    }
+
+    let offset_count = state_count.checked_add(1).ok_or_else(|| {
+        resource_error(
+            CompileStage::DfaDeterminization,
+            usize::MAX,
+            limits.max_dfa_bytes,
+        )
+    })?;
+    let retained_bytes = transitions
+        .capacity()
+        .checked_mul(mem::size_of::<[u32; 256]>())
+        .and_then(|bytes| {
+            accepting
+                .capacity()
+                .checked_mul(mem::size_of::<bool>())
+                .and_then(|accepting| bytes.checked_add(accepting))
+        })
+        .and_then(|bytes| {
+            state_count
+                .checked_mul(mem::size_of::<bool>())
+                .and_then(|live| bytes.checked_add(live))
+        })
+        .ok_or_else(|| {
+            resource_error(
+                CompileStage::DfaDeterminization,
+                usize::MAX,
+                limits.max_dfa_bytes,
+            )
+        })?;
+    let temporary_bytes = predecessor_counts
+        .capacity()
+        .checked_mul(mem::size_of::<usize>())
+        .and_then(|bytes| {
+            offset_count
+                .checked_mul(mem::size_of::<usize>())
+                .and_then(|offsets| bytes.checked_add(offsets))
+        })
+        .and_then(|bytes| {
+            edge_count
+                .checked_mul(mem::size_of::<u32>())
+                .and_then(|edges| bytes.checked_add(edges))
+        })
+        .and_then(|bytes| {
+            state_count
+                .checked_mul(mem::size_of::<bool>() + mem::size_of::<u32>())
+                .and_then(|work| bytes.checked_add(work))
+        })
+        .and_then(|bytes| retained_bytes.checked_add(bytes))
+        .ok_or_else(|| {
+            resource_error(
+                CompileStage::DfaDeterminization,
+                usize::MAX,
+                limits.max_dfa_bytes,
+            )
+        })?;
+    enforce_limit(
+        CompileStage::DfaDeterminization,
+        temporary_bytes,
+        limits.max_dfa_bytes,
+    )?;
+
+    let mut offsets = Vec::new();
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        resource_error(
+            CompileStage::DfaDeterminization,
+            temporary_bytes,
+            limits.max_dfa_bytes,
+        )
+    })?;
+    offsets.push(0_usize);
+    for count in &predecessor_counts {
+        let next = offsets
+            .last()
+            .and_then(|offset| offset.checked_add(*count))
+            .ok_or_else(|| {
+                resource_error(
+                    CompileStage::DfaDeterminization,
+                    usize::MAX,
+                    limits.max_dfa_bytes,
+                )
+            })?;
+        offsets.push(next);
+    }
+
+    let mut predecessors = Vec::new();
+    predecessors.try_reserve_exact(edge_count).map_err(|_| {
+        resource_error(
+            CompileStage::DfaDeterminization,
+            temporary_bytes,
+            limits.max_dfa_bytes,
+        )
+    })?;
+    predecessors.resize(edge_count, 0_u32);
+    predecessor_counts.fill(0);
+    for (source, row) in transitions.iter().enumerate() {
+        let source = to_u32(source, CompileStage::DfaDeterminization)?;
+        let mut targets = *row;
+        targets.sort_unstable();
+        let mut previous = DEAD_DFA_STATE;
+        for target in targets {
+            if target == DEAD_DFA_STATE || target == previous {
+                continue;
+            }
+            previous = target;
+            let target = usize::try_from(target).map_err(|_| CompileError::InternalInvariant {
+                message: "DFA target state does not fit usize",
+            })?;
+            let cursor = offsets[target]
+                .checked_add(predecessor_counts[target])
+                .ok_or(CompileError::InternalInvariant {
+                    message: "DFA predecessor cursor overflowed",
+                })?;
+            predecessors[cursor] = source;
+            predecessor_counts[target] = predecessor_counts[target].checked_add(1).ok_or(
+                CompileError::InternalInvariant {
+                    message: "DFA predecessor cursor overflowed",
+                },
+            )?;
+        }
+    }
+
+    let mut live = accepting.to_vec();
+    let mut stack = Vec::new();
+    stack.try_reserve_exact(state_count).map_err(|_| {
+        resource_error(
+            CompileStage::DfaDeterminization,
+            temporary_bytes,
+            limits.max_dfa_bytes,
+        )
+    })?;
+    for (state, is_accepting) in accepting.iter().copied().enumerate() {
+        if is_accepting {
+            stack.push(to_u32(state, CompileStage::DfaDeterminization)?);
+        }
+    }
+    while let Some(target) = stack.pop() {
+        let target = usize::try_from(target).map_err(|_| CompileError::InternalInvariant {
+            message: "DFA liveness target does not fit usize",
+        })?;
+        for source in &predecessors[offsets[target]..offsets[target + 1]] {
+            let source_id = *source;
+            let source =
+                usize::try_from(source_id).map_err(|_| CompileError::InternalInvariant {
+                    message: "DFA liveness source does not fit usize",
+                })?;
+            if !live[source] {
+                live[source] = true;
+                stack.push(source_id);
+            }
+        }
+    }
+    Ok(live)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1067,24 +1736,34 @@ pub fn certify_regular(grammar: &Grammar) -> Result<RegularAnalysis, CompileErro
         }
     }
 
-    let certificates = outcomes
-        .into_iter()
-        .enumerate()
-        .map(
-            |(index, outcome)| match outcome.expect("all components processed") {
-                Ok(kind) => SccCertificate {
-                    scc: index as SccId,
-                    kind: Some(kind),
-                    failure_reason: None,
-                },
-                Err(reason) => SccCertificate {
-                    scc: index as SccId,
-                    kind: None,
-                    failure_reason: Some(reason),
-                },
+    let mut certificates = Vec::new();
+    certificates
+        .try_reserve_exact(outcomes.len())
+        .map_err(|_| {
+            resource_error(
+                CompileStage::RegularCertification,
+                outcomes.len(),
+                outcomes.len(),
+            )
+        })?;
+    for (index, outcome) in outcomes.into_iter().enumerate() {
+        let outcome = outcome.ok_or(CompileError::InternalInvariant {
+            message: "regular certification left an SCC unprocessed",
+        })?;
+        let scc = to_u32(index, CompileStage::RegularCertification)?;
+        certificates.push(match outcome {
+            Ok(kind) => SccCertificate {
+                scc,
+                kind: Some(kind),
+                failure_reason: None,
             },
-        )
-        .collect();
+            Err(reason) => SccCertificate {
+                scc,
+                kind: None,
+                failure_reason: Some(reason),
+            },
+        });
+    }
     let whole_language = expressions[grammar.start as usize].clone();
     Ok(RegularAnalysis {
         sccs,
@@ -1353,25 +2032,22 @@ fn concat(parts: Vec<RegularExpression>) -> RegularExpression {
 }
 
 fn union(branches: Vec<RegularExpression>) -> RegularExpression {
-    let mut unique = BTreeMap::new();
+    let mut unique = Vec::new();
     for branch in branches {
         match branch {
             RegularExpression::Empty => {}
             RegularExpression::Union(nested) => {
-                for branch in nested {
-                    unique.insert(expression_key(&branch), branch);
-                }
+                unique.extend(nested);
             }
-            other => {
-                unique.insert(expression_key(&other), other);
-            }
+            other => unique.push(other),
         }
     }
-    let mut branches: Vec<_> = unique.into_values().collect();
-    match branches.len() {
+    unique.sort();
+    unique.dedup();
+    match unique.len() {
         0 => RegularExpression::Empty,
-        1 => branches.pop().unwrap(),
-        _ => RegularExpression::Union(branches),
+        1 => unique.pop().unwrap(),
+        _ => RegularExpression::Union(unique),
     }
 }
 
@@ -1383,10 +2059,6 @@ fn star(expression: RegularExpression) -> RegularExpression {
     }
 }
 
-fn expression_key(expression: &RegularExpression) -> String {
-    format!("{expression:?}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1396,6 +2068,19 @@ mod tests {
         let options = CompileOptions::default();
         let arena = parse_and_normalize(schema.as_bytes(), &options).unwrap();
         lower(&arena, &options.limits).unwrap()
+    }
+
+    fn byte_dfa(schema: &str) -> CompiledByteDfa {
+        let options = CompileOptions::default();
+        let mut grammar = grammar(schema);
+        reduce(&mut grammar).unwrap();
+        let expression = certify_regular(&grammar).unwrap().whole_language.unwrap();
+        CompiledByteDfa::compile(
+            &expression,
+            &options.limits,
+            &crate::schema::SchemaPointer(String::new()),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1564,7 +2249,7 @@ mod tests {
             .iter()
             .all(|certificate| certificate.kind == Some(RegularCertificateKind::Acyclic)));
         assert_eq!(
-            analysis.whole_language.unwrap().pattern().unwrap(),
+            analysis.whole_language.unwrap().pattern().unwrap().unwrap(),
             r#""done""#
         );
     }
@@ -1575,8 +2260,11 @@ mod tests {
         let mut grammar = grammar(schema);
         reduce(&mut grammar).unwrap();
         let expression = certify_regular(&grammar).unwrap().whole_language.unwrap();
-        let regex =
-            regex::Regex::new(&format!(r"\A(?:{})\z", expression.pattern().unwrap())).unwrap();
+        let regex = regex::Regex::new(&format!(
+            r"\A(?:{})\z",
+            expression.pattern().unwrap().unwrap()
+        ))
+        .unwrap();
         for valid in ["[1]", "[1,2]", "[1,2,2]"] {
             assert!(regex.is_match(valid), "must accept {valid}");
         }
@@ -1654,7 +2342,7 @@ mod tests {
         );
         let regex = regex::Regex::new(&format!(
             r"\A(?:{})\z",
-            analysis.whole_language.unwrap().pattern().unwrap()
+            analysis.whole_language.unwrap().pattern().unwrap().unwrap()
         ))
         .unwrap();
         assert!(regex.is_match("aaaa"));
@@ -1671,10 +2359,292 @@ mod tests {
         );
         let regex = regex::Regex::new(&format!(
             r"\A(?:{})\z",
-            analysis.whole_language.unwrap().pattern().unwrap()
+            analysis.whole_language.unwrap().pattern().unwrap().unwrap()
         ))
         .unwrap();
         assert!(regex.is_match("aaaa"));
         assert!(!regex.is_match(""));
+    }
+
+    #[test]
+    fn byte_dfa_accepts_deep_reference_result_exactly() {
+        let schema = include_str!("../testdata/regressions/deep_acyclic_ref.json");
+        let dfa = byte_dfa(schema);
+        assert!(dfa.accepts(br#""done""#));
+        assert!(!dfa.accepts(br#""other""#));
+        assert!(!dfa.accepts(b"done"));
+        assert!(dfa.nfa_state_count() > 0);
+        assert!(dfa.nfa_transition_count() > 0);
+    }
+
+    #[test]
+    fn byte_dfa_preserves_prefix_overlapping_alternatives() {
+        let expression = RegularExpression::Union(vec![
+            RegularExpression::Atom {
+                forward: "1".to_owned(),
+                reverse: Some("1".to_owned()),
+            },
+            RegularExpression::Atom {
+                forward: "12".to_owned(),
+                reverse: Some("21".to_owned()),
+            },
+        ]);
+        let dfa = CompiledByteDfa::compile(
+            &expression,
+            &CompileLimits::default(),
+            &crate::schema::SchemaPointer(String::new()),
+        )
+        .unwrap();
+        assert!(dfa.accepts(b"1"));
+        assert!(dfa.accepts(b"12"));
+        assert!(!dfa.accepts(b"123"));
+    }
+
+    #[test]
+    fn byte_dfa_handles_empty_language() {
+        let dfa = CompiledByteDfa::compile(
+            &RegularExpression::Empty,
+            &CompileLimits::default(),
+            &crate::schema::SchemaPointer(String::new()),
+        )
+        .unwrap();
+        assert_eq!(dfa.state_count(), 1);
+        assert!(!dfa.is_accepting(dfa.start_state()));
+        assert!(!dfa.is_live(dfa.start_state()));
+        assert!(dfa.is_dead(dfa.next_state(dfa.start_state(), b'x')));
+        assert!(!dfa.accepts(b""));
+    }
+
+    #[test]
+    fn byte_dfa_handles_epsilon_language() {
+        let dfa = CompiledByteDfa::compile(
+            &RegularExpression::Epsilon,
+            &CompileLimits::default(),
+            &crate::schema::SchemaPointer(String::new()),
+        )
+        .unwrap();
+        assert!(dfa.is_accepting(dfa.start_state()));
+        assert!(dfa.is_live(dfa.start_state()));
+        assert!(dfa.accepts(b""));
+        assert!(!dfa.accepts(b"x"));
+    }
+
+    #[test]
+    fn byte_dfa_accepts_only_canonical_literal_bytes() {
+        let unicode = byte_dfa(r#"{"const":"é"}"#);
+        assert!(unicode.accepts("\"é\"".as_bytes()));
+        assert!(!unicode.accepts(br#""\u00e9""#));
+
+        let control = byte_dfa("{\"const\":\"line\\nfeed\"}");
+        assert!(control.accepts(br#""line\nfeed""#));
+        assert!(!control.accepts(b"\"line\nfeed\""));
+    }
+
+    #[test]
+    fn schema_enum_preserves_numeric_prefix_alternatives() {
+        let dfa = byte_dfa(r#"{"enum":[1,12]}"#);
+        assert!(dfa.accepts(b"1"));
+        assert!(dfa.accepts(b"12"));
+        assert!(!dfa.accepts(b"2"));
+    }
+
+    #[test]
+    fn malformed_regular_atom_reports_its_pointer() {
+        let expression = RegularExpression::Atom {
+            forward: "(".to_owned(),
+            reverse: None,
+        };
+        let pointer = crate::schema::SchemaPointer("/$defs/bad".to_owned());
+        assert!(matches!(
+            CompiledByteDfa::compile(&expression, &CompileLimits::default(), &pointer),
+            Err(CompileError::AutomatonBuild {
+                pointer: error_pointer,
+                ..
+            }) if error_pointer == pointer
+        ));
+    }
+
+    #[test]
+    fn non_ascii_literal_does_not_claim_a_reverse_certificate() {
+        let terminal = RegularTerminal {
+            id: 0,
+            kind: RegularTerminalKind::Literal("é".as_bytes().to_vec()),
+            provenance: Provenance {
+                resource: crate::schema::ResourceId(0),
+                pointer: crate::schema::SchemaPointer(String::new()),
+                keyword: None,
+            },
+        };
+        assert_eq!(terminal.reverse_pattern(), None);
+    }
+
+    #[test]
+    fn byte_dfa_prefix_items_language_is_exact() {
+        let schema = include_str!("../testdata/regressions/prefix_items.json");
+        let dfa = byte_dfa(schema);
+        for valid in ["[1]", "[1,2]", "[1,2,2]"] {
+            assert!(dfa.accepts(valid.as_bytes()), "must accept {valid}");
+        }
+        for invalid in ["[]", "[2]", "[1,3]", "[1,2,2,2]"] {
+            assert!(!dfa.accepts(invalid.as_bytes()), "must reject {invalid}");
+        }
+    }
+
+    #[test]
+    fn byte_dfa_liveness_is_reverse_reachability() {
+        let dfa = byte_dfa(r#"{"const":"done"}"#);
+        let mut state = dfa.start_state();
+        assert!(dfa.is_live(state));
+        for byte in br#""done""# {
+            state = dfa.next_state(state, *byte);
+            assert!(dfa.is_live(state));
+        }
+        assert!(dfa.is_accepting(state));
+        let dead = dfa.next_state(dfa.start_state(), b'x');
+        assert!(dfa.is_dead(dead));
+        assert!(!dfa.is_live(dead));
+        assert!(!dfa.is_accepting(u32::MAX - 1));
+    }
+
+    #[test]
+    fn byte_dfa_numbering_is_stable_across_builds() {
+        let first = byte_dfa(include_str!("../testdata/regressions/prefix_items.json"));
+        let second = byte_dfa(include_str!("../testdata/regressions/prefix_items.json"));
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn minimized_and_unminimized_dfas_accept_the_same_language() {
+        let expression = RegularExpression::Union(vec![
+            RegularExpression::Atom {
+                forward: "1".to_owned(),
+                reverse: Some("1".to_owned()),
+            },
+            RegularExpression::Atom {
+                forward: "12".to_owned(),
+                reverse: Some("21".to_owned()),
+            },
+        ]);
+        let limits = CompileLimits::default();
+        let pointer = crate::schema::SchemaPointer(String::new());
+        let plain =
+            CompiledByteDfa::compile_configured(&expression, &limits, &pointer, false).unwrap();
+        let minimized =
+            CompiledByteDfa::compile_configured(&expression, &limits, &pointer, true).unwrap();
+
+        let mut candidates = vec![Vec::new()];
+        for _ in 0..=3 {
+            let existing = candidates.clone();
+            for prefix in existing {
+                for byte in b"12x" {
+                    let mut candidate = prefix.clone();
+                    candidate.push(*byte);
+                    candidates.push(candidate);
+                }
+            }
+        }
+        for candidate in candidates {
+            assert_eq!(
+                plain.accepts(&candidate),
+                minimized.accepts(&candidate),
+                "minimization changed acceptance for {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn liveness_matches_bounded_suffix_enumeration() {
+        let expression = RegularExpression::Union(vec![
+            RegularExpression::Atom {
+                forward: "ab".to_owned(),
+                reverse: Some("ba".to_owned()),
+            },
+            RegularExpression::Atom {
+                forward: "ac".to_owned(),
+                reverse: Some("ca".to_owned()),
+            },
+        ]);
+        let dfa = CompiledByteDfa::compile(
+            &expression,
+            &CompileLimits::default(),
+            &crate::schema::SchemaPointer(String::new()),
+        )
+        .unwrap();
+        let suffixes = [b"".as_slice(), b"a", b"b", b"c", b"ab", b"ac"];
+        for state in 0..dfa.state_count() {
+            let state = u32::try_from(state).unwrap();
+            let can_finish = suffixes.iter().any(|suffix| {
+                let mut trial = state;
+                for byte in *suffix {
+                    trial = dfa.next_state(trial, *byte);
+                }
+                dfa.is_accepting(trial)
+            });
+            assert_eq!(dfa.is_live(state), can_finish, "state {state}");
+        }
+    }
+
+    #[test]
+    fn byte_dfa_enforces_nfa_state_and_transition_limits() {
+        let expression = RegularExpression::Atom {
+            forward: "done".to_owned(),
+            reverse: Some("enod".to_owned()),
+        };
+        let pointer = crate::schema::SchemaPointer(String::new());
+        let limits = CompileLimits {
+            max_nfa_states: 1,
+            ..CompileLimits::default()
+        };
+        assert!(matches!(
+            CompiledByteDfa::compile(&expression, &limits, &pointer),
+            Err(CompileError::ResourceLimitExceeded {
+                stage: CompileStage::NfaConstruction,
+                ..
+            })
+        ));
+
+        let limits = CompileLimits {
+            max_nfa_transitions: 0,
+            ..CompileLimits::default()
+        };
+        assert!(matches!(
+            CompiledByteDfa::compile(&expression, &limits, &pointer),
+            Err(CompileError::ResourceLimitExceeded {
+                stage: CompileStage::NfaConstruction,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn byte_dfa_enforces_state_and_memory_limits() {
+        let expression = RegularExpression::Atom {
+            forward: "done".to_owned(),
+            reverse: Some("enod".to_owned()),
+        };
+        let pointer = crate::schema::SchemaPointer(String::new());
+        let limits = CompileLimits {
+            max_dfa_states: 1,
+            ..CompileLimits::default()
+        };
+        assert!(matches!(
+            CompiledByteDfa::compile(&expression, &limits, &pointer),
+            Err(CompileError::ResourceLimitExceeded {
+                stage: CompileStage::DfaDeterminization,
+                ..
+            })
+        ));
+
+        let limits = CompileLimits {
+            max_dfa_bytes: mem::size_of::<[u32; 256]>() - 1,
+            ..CompileLimits::default()
+        };
+        assert!(matches!(
+            CompiledByteDfa::compile(&RegularExpression::Empty, &limits, &pointer),
+            Err(CompileError::ResourceLimitExceeded {
+                stage: CompileStage::DfaDeterminization,
+                ..
+            })
+        ));
     }
 }
