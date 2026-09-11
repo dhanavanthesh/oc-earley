@@ -67,11 +67,13 @@ pub struct Index {
 ///
 /// ## Example:
 /// ```rust
-/// use outlines_core::prelude::*;
+/// use oc_earley::prelude::*;
 ///
-/// # fn run() -> Result<(), outlines_core::Error> {
+/// # fn run() -> Result<(), oc_earley::Error> {
 /// let regex = "0|[1-9][0-9]*";
-/// let vocabulary = Vocabulary::from_pretrained("openai-community/gpt2", None)?;
+/// let mut vocabulary = Vocabulary::new(2);
+/// vocabulary.try_insert("0", 0)?;
+/// vocabulary.try_insert("1", 1)?;
 /// let index = Index::new(regex, &vocabulary)?;
 ///
 /// let initial_state = index.initial_state();

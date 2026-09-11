@@ -1,0 +1,12 @@
+OC-Earley is a modified fork of dottxt-ai/outlines-core.
+
+The original software is licensed under Apache License 2.0.
+Original copyright and attribution notices are retained.
+
+Material modifications include:
+- renamed Rust and Python packages;
+- strict JSON Schema profile;
+- graph-based reference resolution;
+- grammar lowering;
+- regular-language certification;
+- future LALR/Earley backend architecture.

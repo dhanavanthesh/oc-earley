@@ -4,7 +4,7 @@ from typing import Dict, List, Union
 
 import pytest
 
-from outlines_core import Guide, Index, Vocabulary
+from oc_earley import Guide, Index, Vocabulary
 
 
 @pytest.fixture(scope="session")
@@ -203,6 +203,17 @@ def test_rollback_interface(index):
     # Rolling back more than recorded history must raise
     with pytest.raises(ValueError, match="Cannot roll back"):
         guide.rollback_state(5)
+
+
+def test_reset_clears_rollback_history(index):
+    guide = Guide(index, max_rollback=32)
+    guide.advance(guide.get_tokens()[0])
+    assert guide.get_allowed_rollback() == 1
+
+    guide.reset()
+
+    assert guide.get_state() == index.get_initial_state()
+    assert guide.get_allowed_rollback() == 0
 
 
 @pytest.mark.parametrize(

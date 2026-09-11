@@ -1,0 +1,18 @@
+{
+  "$defs": {
+    "node": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "properties": {
+            "next": {"$ref": "#/$defs/node"}
+          },
+          "required": ["next"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$ref": "#/$defs/node"
+}

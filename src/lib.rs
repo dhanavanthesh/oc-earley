@@ -1,6 +1,6 @@
-//! # Outlines_core
+//! # OC-Earley
 //!
-//! `outlines_core` crate provides a convenient way to:
+//! `oc_earley` provides exact constrained-decoding primitives.
 //!
 //! - build regular expressions from JSON schemas
 //!
@@ -33,17 +33,15 @@
 //!
 //! ## Support
 //!
-//! `Outlines_core` is primarily used in structured text generation project [`outlines`](https://github.com/dottxt-ai/outlines),
-//! if you need support, consider reaching out to its maintainers, you can also open an issue or start a discussion
-//! on [github](https://github.com/dottxt-ai/outlines-core)
+//! OC-Earley is an Apache-2.0 fork of outlines-core with a strict schema compiler.
 //!
 //! ## Example
 //!
 //! Basic example of how it all fits together.
 //!
-//! ```rust
-//! # use outlines_core::Error;
-//! use outlines_core::prelude::*;
+//! ```no_run
+//! # use oc_earley::Error;
+//! use oc_earley::prelude::*;
 //!
 //! # fn main() -> Result<(), Error> {
 //! // Define a JSON schema
@@ -60,8 +58,11 @@
 //! let regex = json_schema::regex_from_str(&schema, None, None)?;
 //! println!("Generated regex: {}", regex);
 //!
-//! // Create `Vocabulary` from pretrained large language model (but manually is also possible)
-//! let vocabulary = Vocabulary::from_pretrained("openai-community/gpt2", None)?;
+//! // Construct a small vocabulary. Model tokenizers can also populate it.
+//! let mut vocabulary = Vocabulary::new(3);
+//! vocabulary.try_insert("{", 0)?;
+//! vocabulary.try_insert("}", 1)?;
+//! vocabulary.try_insert("name", 2)?;
 //!
 //! // Create new `Index` from regex and a given `Vocabulary`
 //! let index = Index::new(&regex, &vocabulary)?;

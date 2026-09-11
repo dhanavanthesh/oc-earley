@@ -1,0 +1,9 @@
+{
+  "type": "array",
+  "prefixItems": [
+    {"const": 1}
+  ],
+  "items": {"const": 2},
+  "minItems": 1,
+  "maxItems": 3
+}

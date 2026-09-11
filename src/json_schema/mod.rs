@@ -112,8 +112,8 @@ use crate::Result;
 /// # Example
 ///
 /// ```rust
-/// # use outlines_core::Error;
-/// use outlines_core::prelude::*;
+/// # use oc_earley::Error;
+/// use oc_earley::prelude::*;
 ///
 /// # fn main() -> Result<(), Error> {
 ///     // Define a JSON schema
@@ -152,9 +152,9 @@ pub fn regex_from_str(
 /// # Example
 ///
 /// ```rust
-/// # use outlines_core::Error;
+/// # use oc_earley::Error;
 /// use serde_json::Value;
-/// use outlines_core::prelude::*;
+/// use oc_earley::prelude::*;
 ///
 /// # fn main() -> Result<(), Error> {
 ///     // Define a JSON schema

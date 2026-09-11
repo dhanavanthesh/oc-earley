@@ -1,4 +1,4 @@
-use outlines_core::prelude::*;
+use oc_earley::prelude::*;
 
 fn print_help() {
     println!("JSON Schema to Regex Converter\n");

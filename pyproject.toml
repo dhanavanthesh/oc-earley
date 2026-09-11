@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "outlines_core"
+name = "oc-earley"
 authors= [{name = "Outlines Developers"}]
 description = "Structured Text Generation in Rust"
 requires-python = ">=3.8"
@@ -45,14 +45,13 @@ test-without-numba = [
 ]
 
 test = [
-    "outlines_core[test-without-numba]",
+    "oc-earley[test-without-numba]",
     "numba",
 ]
 
 [project.urls]
-homepage = "https://github.com/dottxt-ai/outlines-core"
-documentation = "https://dottxt-ai.github.io/outlines-core/"
-repository = "https://github.com/dottxt-ai/outlines-core"
+homepage = "https://github.com/dhanavanthesh/oc-earley"
+repository = "https://github.com/dhanavanthesh/oc-earley"
 
 [project.readme]
 file="README.md"
@@ -101,3 +100,5 @@ diff_range_notation = ".."
 
 [tool.maturin]
 features = ["python-bindings"]
+module-name = "oc_earley.oc_earley"
+python-source = "."

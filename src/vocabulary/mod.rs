@@ -28,14 +28,14 @@ mod processor;
     doc = r##"
 /// ### Create a vocabulary from a pretrained model.
 /// ```rust
-/// use outlines_core::prelude::*;
+/// use oc_earley::prelude::*;
 ///
 /// let vocabulary = Vocabulary::from_pretrained("openai-community/gpt2", None);
 /// ```
 ///
 /// ### Create a vocabulary from a pretrained model with some additional parameters.
 /// ``` rust
-/// use outlines_core::prelude::*;
+/// use oc_earley::prelude::*;
 ///
 /// let params = FromPretrainedParameters {
 ///     revision: "607a30d783dfa663caf39e06633721c8d4cfcd7e".to_string(),
@@ -47,7 +47,7 @@ mod processor;
 ///
 /// ### Create an empty vocabulary and manually insert some tokens.
 /// ```rust
-/// use outlines_core::prelude::*;
+/// use oc_earley::prelude::*;
 ///
 /// let eos_token_id = 1;
 /// let mut vocabulary = Vocabulary::new(eos_token_id);

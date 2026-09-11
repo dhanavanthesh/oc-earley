@@ -24,7 +24,7 @@ macro_rules! type_name {
 }
 
 /// Guide object based on Index.
-#[pyclass(name = "Guide", module = "outlines_core", from_py_object)]
+#[pyclass(name = "Guide", module = "oc_earley", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PyGuide {
     state: StateId,
@@ -188,6 +188,7 @@ impl PyGuide {
 
     fn reset(&mut self) {
         self.state = self.index.get_initial_state();
+        self.state_cache.clear();
     }
 
     /// Gets the debug string representation of the guide.
@@ -213,7 +214,7 @@ impl PyGuide {
 
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
-            let cls = PyModule::import(py, "outlines_core")?.getattr("Guide")?;
+            let cls = PyModule::import(py, "oc_earley")?.getattr("Guide")?;
             let binary_data: Vec<u8> =
                 bincode::encode_to_vec(self, config::standard()).map_err(|e| {
                     PyErr::new::<PyValueError, _>(format!("Serialization of Guide failed: {}", e))
@@ -233,7 +234,7 @@ impl PyGuide {
 }
 
 /// Index object based on regex and vocabulary.
-#[pyclass(name = "Index", module = "outlines_core", frozen, from_py_object)]
+#[pyclass(name = "Index", module = "oc_earley", frozen, from_py_object)]
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PyIndex(Arc<Index>);
 
@@ -301,7 +302,7 @@ impl PyIndex {
 
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
-            let cls = PyModule::import(py, "outlines_core")?.getattr("Index")?;
+            let cls = PyModule::import(py, "oc_earley")?.getattr("Index")?;
             let binary_data: Vec<u8> = bincode::encode_to_vec(&self.0, config::standard())
                 .map_err(|e| {
                     PyErr::new::<PyValueError, _>(format!("Serialization of Index failed: {}", e))
@@ -321,7 +322,7 @@ impl PyIndex {
 }
 
 /// LLM vocabulary.
-#[pyclass(name = "Vocabulary", module = "outlines_core", from_py_object)]
+#[pyclass(name = "Vocabulary", module = "oc_earley", from_py_object)]
 #[derive(Clone, Debug, Encode, Decode)]
 pub struct PyVocabulary(Vocabulary);
 
@@ -446,7 +447,7 @@ impl PyVocabulary {
 
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, (Vec<u8>,))> {
         Python::attach(|py| {
-            let cls = PyModule::import(py, "outlines_core")?.getattr("Vocabulary")?;
+            let cls = PyModule::import(py, "oc_earley")?.getattr("Vocabulary")?;
             let binary_data: Vec<u8> =
                 bincode::encode_to_vec(self, config::standard()).map_err(|e| {
                     PyErr::new::<PyValueError, _>(format!(
@@ -508,7 +509,7 @@ fn register_child_module(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let sys = PyModule::import(m.py(), "sys")?;
     let sys_modules_bind = (sys.as_ref() as &Bound<PyAny>).getattr("modules")?;
     let sys_modules = sys_modules_bind.cast::<PyDict>()?;
-    sys_modules.set_item("outlines_core.json_schema", &m)?;
+    sys_modules.set_item("oc_earley.json_schema", &m)?;
 
     Ok(())
 }
@@ -519,7 +520,7 @@ fn register_child_module(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
 ///
 /// - construct an Index object by combining a Vocabulary and regular expression to efficiently map tokens from a given Vocabulary to state transitions in a finite-state automation
 #[pymodule(gil_used = false)]
-fn outlines_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn oc_earley(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let version = env!("CARGO_PKG_VERSION");
     m.add("__version__", version)?;
 

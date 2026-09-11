@@ -1,0 +1,6 @@
+{
+  "oneOf": [
+    {"type": "integer"},
+    {"const": 1}
+  ]
+}

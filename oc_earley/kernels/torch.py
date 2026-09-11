@@ -3,14 +3,14 @@
 # which it writes into a tensor.
 #
 # Kernels inspired by https://github.com/guidance-ai/llguidance/blob/main/python/llguidance/torch.py
-from outlines_core import Guide
+from oc_earley import Guide
 
 try:
     import torch
 except Exception as e:
     raise ImportError(
         "`torch` is required to use the kernels from"
-        "`outlines_core.kernels.torch. You can install "
+        "`oc_earley.kernels.torch`. You can install "
         "`torch` using the official guide at https://pytorch.org/get-started/locally/"
     ) from e
 

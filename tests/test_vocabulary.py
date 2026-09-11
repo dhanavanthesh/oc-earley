@@ -3,7 +3,7 @@ import pickle
 
 import pytest
 
-from outlines_core import Vocabulary
+from oc_earley import Vocabulary
 
 
 @pytest.fixture(scope="session")

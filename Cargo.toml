@@ -1,10 +1,10 @@
 [package]
-name = "outlines-core"
+name = "oc-earley"
 version = "0.0.0"
 edition = "2021"
-description = "Structured Generation"
+description = "Exact JSON Schema compilation for constrained decoding"
 license = "Apache-2.0"
-repository = "https://github.com/dottxt-ai/outlines-core"
+repository = "https://github.com/dhanavanthesh/oc-earley"
 rust-version = "1.85.0"
 
 [dependencies]
@@ -37,7 +37,7 @@ python-bindings = ["pyo3", "pyo3/generate-import-lib", "serde-pyobject"]
 hugginface-hub = ["hf-hub", "tokenizers/http",  "tokenizers/rustls-tls"]
 
 [lib]
-name = "outlines_core"
+name = "oc_earley"
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
@@ -52,5 +52,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
 
 [[bin]]
 name = "convert-json-schema"
+test = false
+bench = false
+
+[[bin]]
+name = "oc-earley"
 test = false
 bench = false

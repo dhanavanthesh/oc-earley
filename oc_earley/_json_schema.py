@@ -1,5 +1,5 @@
 # Re-export from Rust extension
-from .outlines_core import json_schema as _json_schema
+from .oc_earley import json_schema as _json_schema
 
 BOOLEAN = _json_schema.BOOLEAN
 DATE = _json_schema.DATE

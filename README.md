@@ -1,214 +1,47 @@
-<div align="center" style="margin-bottom: 1em;">
+# OC-Earley
 
-<img src="./docs/assets/images/logo.png" alt="Outlines-core Logo" width=500></img>
+OC-Earley is a correctness-first constrained-decoding compiler for JSON Schema Draft 2020-12. It preserves the existing packed vocabulary-mask ABI from outlines-core while replacing depth-capped schema expansion with graph-based compilation.
 
-[![Latest Version]][crates.io] [![License]][github] ![MSRV][version] ![downloads-badge]
+The governing rule is simple: exact or explicit. If the compiler cannot prove that a transformation preserves the canonical schema language, it reports an unsupported construct or selects a structural backend. It never drops an assertion or property silently.
 
-[Latest Version]: https://img.shields.io/crates/v/outlines-core.svg
-[crates.io]: https://crates.io/crates/outlines-core
-[License]: https://img.shields.io/github/license/dottxt-ai/outlines-core.svg?color=blue&cachedrop
-[github]: https://github.com/dottxt-ai/outlines-core/blob/main/LICENSE
-[MSRV]: MSRV
-[version]: https://img.shields.io/crates/msrv/outlines-core.svg?label=msrv&color=lightgrayy
-[downloads-badge]: https://img.shields.io/pypi/dm/outlines-core?color=A6B4A3&logo=python&logoColor=white&style=flat-square
+## Compiler pipeline
 
-*Structured generation (in Rust).*
+The schema compiler follows this pipeline:
 
-</div>
-
-## Outlines-core
-
-This package provides the core functionality for structured generation, formerly implemented in [Outlines][outlines],
-with a focus on performance and portability, it offers a convenient way to:
-
-- build regular expressions from JSON schemas
-
-- construct an `Index` object by combining a `Vocabulary` and regular expression to efficiently map tokens from a given vocabulary to state transitions in a finite-state automation
-
-### Example
-
-Basic example of how it all fits together.
-
-```rust
-use outlines_core::prelude::*;
-
-// Define a JSON schema
-let schema = r#"{
-    "type": "object",
-    "properties": {
-        "name": { "type": "string" },
-        "age": { "type": "integer" }
-    },
-    "required": ["name", "age"]
-}"#;
-
-// Generate a regular expression from it
-let regex = json_schema::regex_from_str(&schema, None)?;
-
-// Create `Vocabulary` from pretrained large language model (but manually is also possible)
-let vocabulary = Vocabulary::from_pretrained("openai-community/gpt2", None)?;
-
-// Create new `Index` from regex and a given `Vocabulary`
-let index = Index::new(&regex, &vocabulary)?;
-
-let initial_state = index.initial_state();
-let allowed_tokens = index.allowed_tokens(&initial_state).expect("Some allowed token ids");
-let token_id = allowed_tokens.first().expect("First token id");
-let next_state = index.next_state(&initial_state, token_id);
-let final_states = index.final_states();
+```text
+JSON Schema
+  -> strict K1 validation
+  -> local-reference graph
+  -> exact normalization
+  -> provenance-carrying grammar
+  -> reduction and SCC analysis
+  -> exact regular certificate
+  -> byte DFA
+  -> vocabulary Index
+  -> packed u32 mask
 ```
 
-### Vocabulary
+Schemas that are not certified regular produce `StructuralBackendRequired`. Structural recognizers are not shipped in the current release, and the library never substitutes a weaker approximation.
 
-You can create a `Vocabulary` in three ways:
+## Identities
 
-1. **`Vocabulary::from_pretrained(model, parameters)`** - Loads from a pretrained model (as in the example above)
+- Cargo package and CLI: `oc-earley`
+- Rust crate: `oc_earley`
+- Python distribution: `oc-earley`
+- Python import: `oc_earley`
 
-2. **Manual creation** - You can create a vocabulary from token mappings:
+## Legacy regular-expression API
 
-    1. **`Vocabulary::new(eos_token_id)`** - Creates an empty vocabulary, then add tokens with `try_insert()`:
+```python
+from oc_earley import Guide, Index, Vocabulary
 
-        ```rust
-        let mut vocabulary = Vocabulary::new(50256);
-        vocabulary.try_insert("hello", 0)?;
-        vocabulary.try_insert(vec![32], 1)?;
-        ```
-
-    2. **`Vocabulary::try_from((eos_token_id, tokens))`** - Creates a vocabulary by directly providing the token mappings.
-
-        - It can be done either with the tokens as strings:
-
-            ```rust
-            use rustc_hash::FxHashMap as HashMap;
-
-            let eos_token_id: u32 = 50256;
-            let mut tokens: HashMap<String, Vec<u32>> = HashMap::default();
-            tokens.insert("hello".to_string(), vec![0]);
-            tokens.insert("world".to_string(), vec![1]);
-
-            let vocabulary = Vocabulary::try_from((eos_token_id, tokens))?;
-            ```
-
-        - Or with the tokens as byte vector keys:
-
-            ```rust
-            use rustc_hash::FxHashMap as HashMap;
-
-            let eos_token_id: u32 = 50256;
-            let mut tokens: HashMap<Vec<u8>, Vec<u32>> = HashMap::default();
-            tokens.insert(b"hello".to_vec(), vec![0]);
-            tokens.insert(b"world".to_vec(), vec![1]);
-
-            let vocabulary = Vocabulary::try_from((eos_token_id, tokens))?;
-            ```
-
-**Important**: When creating a `Vocabulary` manually from tokenizer data, ensure tokens are converted to their string representations to replace special tokens that wouldn't be recognized by the DFA.
-
-## Python Bindings
-
-Additionally, project provides interfaces to integrate the crate's functionality with Python.
-
-``` python
-import json
-
-from outlines_core.json_schema import build_regex_from_schema
-from outlines_core import Guide, Index, Vocabulary
-
-schema =  {
-  "title": "Foo",
-  "type": "object",
-  "properties": {"date": {"type": "string", "format": "date"}}
-}
-regex = build_regex_from_schema(json.dumps(schema))
-
-vocabulary = Vocabulary.from_pretrained("openai-community/gpt2")
-index = Index(regex, vocabulary)
+vocabulary = Vocabulary(3, {"0": [0], "1": [1]})
+index = Index(r"0|[1-9][0-9]*", vocabulary)
 guide = Guide(index)
-
-# Get current state of the Guide:
-current_state = guide.get_state()
-
-# Get allowed tokens for the current state of the Guide:
-allowed_tokens = guide.get_tokens()
-
-# Advance Guide to the next state via some token_id and return allowed tokens for that new state:
-next_allowed_tokens = guide.advance(allowed_tokens[-1])
-
-# To check if Guide is finished:
-guide.is_finished()
-
-# If it's finished then this assertion holds:
-assert guide.get_tokens() == [vocabulary.get_eos_token_id()]
 ```
 
-## How to contribute?
+`Guide.write_mask_into(data_ptr, numel, element_size)` keeps the inherited ABI. The buffer is zeroed first, each token uses `word = id / 32` and `bit = id % 32`, and bits are LSB-first in native-endian `u32` words.
 
-### Setup
+## Attribution
 
-Fork the repository on GitHub and clone the fork locally:
-
-```bash
-git clone git@github.com/YourUserName/outlines-core.git
-cd outlines-core
-```
-
-Create a new virtual environment and install the dependencies in editable mode:
-
-``` bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[test]"
-pre-commit install
-```
-
-### Before pushing your code
-
-If working with Python bindings don't forget to build Rust extension before testing, for example, in debug mode:
-
-```bash
-make build-extension-debug
-```
-
-Run Python tests:
-
-``` bash
-pytest
-```
-
-Run Rust tests:
-
-``` bash
-cargo test
-```
-
-Or alternatively using Makefile for both:
-
-``` bash
-make test
-```
-
-Finally, run the code style checks:
-
-``` bash
-pre-commit run --all-files
-```
-
-Or using Makefile:
-
-``` bash
-make pcc
-```
-
-If necessary you can run benchmarks locally:
-
-``` bash
-make pybench
-```
-
-## Join us
-
-- 💡 **Have an idea?** Come chat with us on [Discord][discord]
--  **Found a bug?** Open an [issue](https://github.com/dottxt-ai/outlines-core/issues)
-
-[outlines]: https://github.com/dottxt-ai/outlines
-[discord]: https://discord.gg/R9DSu34mGd
+OC-Earley is a modified fork of `dottxt-ai/outlines-core`. The original Apache License 2.0 text is retained verbatim in `LICENSE`; material modifications are summarized in `NOTICE`.

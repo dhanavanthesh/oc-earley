@@ -1,4 +1,4 @@
-from outlines_core import Guide
+from oc_earley import Guide
 
 try:
     import numba
@@ -6,7 +6,7 @@ try:
 except ImportError as e:
     missing_dep = "numba" if "numba" in str(e) else "numpy"
     raise ImportError(
-        f"To use the kernels in `outlines_core.kernels.numpy`, `{missing_dep}` must be installed. You can install it with `pip install {missing_dep}`"
+        f"To use the kernels in `oc_earley.kernels.numpy`, `{missing_dep}` must be installed. You can install it with `pip install {missing_dep}`"
     ) from e
 
 

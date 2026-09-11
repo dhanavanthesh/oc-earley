@@ -1,4 +1,4 @@
-from outlines_core import Guide
+from oc_earley import Guide
 
 try:
     import mlx.core as mx
@@ -6,7 +6,7 @@ try:
 except ImportError as e:
     missing_dep = "numpy" if "numpy" in str(e) else "mlx"
     raise ImportError(
-        f"To use the kernels in `outlines_core.kernels.mlx`, {missing_dep} must be installed. You can install it with `pip install {missing_dep}`"
+        f"To use the kernels in `oc_earley.kernels.mlx`, {missing_dep} must be installed. You can install it with `pip install {missing_dep}`"
     ) from e
 
 

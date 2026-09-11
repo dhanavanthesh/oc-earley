@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "a": {"$ref": "#/$defs/b"},
+    "b": {"$ref": "#/$defs/c"},
+    "c": {"$ref": "#/$defs/d"},
+    "d": {"$ref": "#/$defs/e"},
+    "e": {"const": "done"}
+  },
+  "$ref": "#/$defs/a"
+}
