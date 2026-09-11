@@ -91,8 +91,8 @@ def test_serialized_headers_reject_invalid_inputs():
         Index.from_binary(binary)
 
     wrong_version = list(binary)
-    wrong_version[8] = 3
-    with pytest.raises(ValueError, match="format version 3 is unsupported"):
+    wrong_version[8] = 4
+    with pytest.raises(ValueError, match="format version 4 is unsupported"):
         CompiledSchema.from_binary(wrong_version)
 
     with pytest.raises(ValueError, match="invalid magic bytes"):

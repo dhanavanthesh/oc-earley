@@ -67,6 +67,20 @@ def test_structural_pickle_rejects_trailing_and_wrong_version_data():
     with pytest.raises(ValueError, match="trailing data"):
         Guide.from_binary(binary + b"\x00")
     wrong_version = bytearray(binary)
-    wrong_version[8] = 3
-    with pytest.raises(ValueError, match="format version 3 is unsupported"):
+    wrong_version[8] = 4
+    with pytest.raises(ValueError, match="format version 4 is unsupported"):
         Guide.from_binary(wrong_version)
+
+
+def test_structural_pickle_rejects_a_changed_semantic_contract():
+    compiled = CompiledSchema.from_json_schema(
+        SCHEMA,
+        Vocabulary(100, {b"null": [1]}),
+    )
+    binary = bytearray(compiled.guide().__reduce__()[1][0])
+    profile = binary.find(b"K1")
+    assert profile >= 13
+    binary[profile + 1] = ord("2")
+
+    with pytest.raises(ValueError, match="semantic contract is incompatible"):
+        Guide.from_binary(binary)
