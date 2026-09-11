@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 # Optional target to test/benchmark.
 TARGET ?=
 TARPAULIN_INSTALLED := $(shell command -v cargo-tarpaulin > /dev/null && echo 1 || echo 0)

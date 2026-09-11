@@ -9,4 +9,6 @@ Material modifications include:
 - graph-based reference resolution;
 - grammar lowering;
 - regular-language certification;
-- LALR(1) and Earley structural recognition.
+- LALR(1) and Earley structural recognition;
+- exact vocabulary-trie masking and rollback-safe guides;
+- Rust, Python, packaging, and release integration.

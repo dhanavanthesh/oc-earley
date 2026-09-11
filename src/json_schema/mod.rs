@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 //! Provides interfaces to generate a regular expression based on a given JSON schema.
 //!
 //! An optional custom pattern could be passed as well to handle whitespace within the regex.

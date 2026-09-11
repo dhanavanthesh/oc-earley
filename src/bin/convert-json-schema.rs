@@ -1,3 +1,6 @@
+// Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+// See PROVENANCE.md, NOTICE, and LICENSE.
+
 use oc_earley::prelude::*;
 
 fn print_help() {

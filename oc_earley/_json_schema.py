@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 # Re-export from Rust extension
 from .oc_earley import json_schema as _json_schema
 

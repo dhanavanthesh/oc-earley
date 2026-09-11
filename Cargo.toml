@@ -1,11 +1,29 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 [package]
 name = "oc-earley"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 description = "Exact JSON Schema compilation for constrained decoding"
 license = "Apache-2.0"
 repository = "https://github.com/dhanavanthesh/oc-earley"
 rust-version = "1.85.0"
+keywords = ["json-schema", "constrained-decoding", "earley", "lalr"]
+categories = ["parsing", "text-processing"]
+include = [
+    "/src/**",
+    "/oc_earley/__init__.py",
+    "/oc_earley/_json_schema.py",
+    "/oc_earley/kernels/*.py",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/NOTICE",
+    "/PROVENANCE.md",
+    "/README.md",
+    "/pyproject.toml",
+]
 
 [dependencies]
 once_cell = "1.20"
