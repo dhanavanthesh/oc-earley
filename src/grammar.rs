@@ -574,6 +574,354 @@ fn to_u32(value: usize, stage: CompileStage) -> Result<u32, CompileError> {
     u32::try_from(value).map_err(|_| resource_error(stage, value, u32::MAX as usize))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ReductionStats {
+    pub removed_nonterminals: usize,
+    pub removed_terminals: usize,
+    pub removed_productions: usize,
+}
+
+pub fn reduce(grammar: &mut Grammar) -> Result<ReductionStats, CompileError> {
+    let original_nonterminals = grammar.nonterminals.len();
+    let original_terminals = grammar.terminals.len();
+    let original_productions = grammar.productions.len();
+    let productive = productive_nonterminals(grammar)?;
+
+    if !productive[grammar.start as usize] {
+        let start = grammar.nonterminals[grammar.start as usize].clone();
+        grammar.start = 0;
+        grammar.nonterminals = vec![Nonterminal { id: 0, ..start }];
+        grammar.terminals.clear();
+        grammar.productions.clear();
+        return Ok(ReductionStats {
+            removed_nonterminals: original_nonterminals.saturating_sub(1),
+            removed_terminals: original_terminals,
+            removed_productions: original_productions,
+        });
+    }
+
+    let reachable = reachable_nonterminals(grammar);
+    let retained: Vec<bool> = productive
+        .iter()
+        .zip(reachable.iter())
+        .map(|(productive, reachable)| *productive && *reachable)
+        .collect();
+
+    let mut nonterminal_map = vec![None; grammar.nonterminals.len()];
+    let mut nonterminals = Vec::new();
+    for nonterminal in &grammar.nonterminals {
+        if retained[nonterminal.id as usize] {
+            let id = to_u32(nonterminals.len(), CompileStage::GrammarReduction)?;
+            nonterminal_map[nonterminal.id as usize] = Some(id);
+            nonterminals.push(Nonterminal {
+                id,
+                name: nonterminal.name.clone(),
+                provenance: nonterminal.provenance.clone(),
+            });
+        }
+    }
+
+    let retained_productions: Vec<_> = grammar
+        .productions
+        .iter()
+        .filter(|production| {
+            retained[production.lhs as usize]
+                && production.rhs.iter().all(|symbol| match symbol {
+                    Symbol::Nonterminal(id) => retained[*id as usize],
+                    Symbol::Terminal(_) => true,
+                })
+        })
+        .collect();
+    let mut terminal_used = vec![false; grammar.terminals.len()];
+    for production in &retained_productions {
+        for symbol in &production.rhs {
+            if let Symbol::Terminal(id) = symbol {
+                terminal_used[*id as usize] = true;
+            }
+        }
+    }
+    let mut terminal_map = vec![None; grammar.terminals.len()];
+    let mut terminals = Vec::new();
+    for terminal in &grammar.terminals {
+        if terminal_used[terminal.id as usize] {
+            let id = to_u32(terminals.len(), CompileStage::GrammarReduction)?;
+            terminal_map[terminal.id as usize] = Some(id);
+            terminals.push(RegularTerminal {
+                id,
+                kind: terminal.kind.clone(),
+                provenance: terminal.provenance.clone(),
+            });
+        }
+    }
+
+    let mut productions = Vec::new();
+    productions
+        .try_reserve(retained_productions.len())
+        .map_err(|_| {
+            resource_error(
+                CompileStage::GrammarReduction,
+                retained_productions.len(),
+                retained_productions.len().saturating_sub(1),
+            )
+        })?;
+    for production in retained_productions {
+        let lhs =
+            nonterminal_map[production.lhs as usize].ok_or(CompileError::InternalInvariant {
+                message: "retained production has removed lhs",
+            })?;
+        let mut rhs = Vec::new();
+        rhs.try_reserve(production.rhs.len()).map_err(|_| {
+            resource_error(
+                CompileStage::GrammarReduction,
+                production.rhs.len(),
+                production.rhs.len().saturating_sub(1),
+            )
+        })?;
+        for symbol in &production.rhs {
+            rhs.push(match symbol {
+                Symbol::Nonterminal(id) => Symbol::Nonterminal(
+                    nonterminal_map[*id as usize].ok_or(CompileError::InternalInvariant {
+                        message: "retained production references removed nonterminal",
+                    })?,
+                ),
+                Symbol::Terminal(id) => Symbol::Terminal(terminal_map[*id as usize].ok_or(
+                    CompileError::InternalInvariant {
+                        message: "retained production references removed terminal",
+                    },
+                )?),
+            });
+        }
+        productions.push(Production {
+            id: to_u32(productions.len(), CompileStage::GrammarReduction)?,
+            lhs,
+            rhs,
+            provenance: production.provenance.clone(),
+        });
+    }
+
+    grammar.start =
+        nonterminal_map[grammar.start as usize].ok_or(CompileError::InternalInvariant {
+            message: "productive reachable start was removed",
+        })?;
+    grammar.nonterminals = nonterminals;
+    grammar.terminals = terminals;
+    grammar.productions = productions;
+
+    Ok(ReductionStats {
+        removed_nonterminals: original_nonterminals - grammar.nonterminals.len(),
+        removed_terminals: original_terminals - grammar.terminals.len(),
+        removed_productions: original_productions - grammar.productions.len(),
+    })
+}
+
+fn productive_nonterminals(grammar: &Grammar) -> Result<Vec<bool>, CompileError> {
+    let mut remaining = Vec::new();
+    remaining
+        .try_reserve(grammar.productions.len())
+        .map_err(|_| {
+            resource_error(
+                CompileStage::GrammarReduction,
+                grammar.productions.len(),
+                grammar.productions.len().saturating_sub(1),
+            )
+        })?;
+    let mut waiting = vec![Vec::new(); grammar.nonterminals.len()];
+    for (index, production) in grammar.productions.iter().enumerate() {
+        let mut count = 0usize;
+        for symbol in &production.rhs {
+            if let Symbol::Nonterminal(id) = symbol {
+                count = count.checked_add(1).ok_or_else(|| {
+                    resource_error(CompileStage::GrammarReduction, usize::MAX, usize::MAX - 1)
+                })?;
+                waiting[*id as usize].push(index);
+            }
+        }
+        remaining.push(count);
+    }
+
+    let mut productive = vec![false; grammar.nonterminals.len()];
+    let mut queue = std::collections::VecDeque::new();
+    for (index, production) in grammar.productions.iter().enumerate() {
+        if remaining[index] == 0 && !productive[production.lhs as usize] {
+            productive[production.lhs as usize] = true;
+            queue.push_back(production.lhs);
+        }
+    }
+    while let Some(nonterminal) = queue.pop_front() {
+        for &production_index in &waiting[nonterminal as usize] {
+            remaining[production_index] -= 1;
+            if remaining[production_index] == 0 {
+                let lhs = grammar.productions[production_index].lhs;
+                if !productive[lhs as usize] {
+                    productive[lhs as usize] = true;
+                    queue.push_back(lhs);
+                }
+            }
+        }
+    }
+    Ok(productive)
+}
+
+fn reachable_nonterminals(grammar: &Grammar) -> Vec<bool> {
+    let mut productions_by_lhs = vec![Vec::new(); grammar.nonterminals.len()];
+    for production in &grammar.productions {
+        productions_by_lhs[production.lhs as usize].push(production);
+    }
+    let mut reachable = vec![false; grammar.nonterminals.len()];
+    let mut stack = vec![grammar.start];
+    reachable[grammar.start as usize] = true;
+    while let Some(nonterminal) = stack.pop() {
+        for production in &productions_by_lhs[nonterminal as usize] {
+            for symbol in &production.rhs {
+                if let Symbol::Nonterminal(target) = symbol {
+                    if !reachable[*target as usize] {
+                        reachable[*target as usize] = true;
+                        stack.push(*target);
+                    }
+                }
+            }
+        }
+    }
+    reachable
+}
+
+pub fn dependency_graph(grammar: &Grammar) -> Vec<Vec<NonterminalId>> {
+    let mut graph = vec![Vec::new(); grammar.nonterminals.len()];
+    for production in &grammar.productions {
+        for symbol in &production.rhs {
+            if let Symbol::Nonterminal(target) = symbol {
+                graph[production.lhs as usize].push(*target);
+            }
+        }
+    }
+    for edges in &mut graph {
+        edges.sort_unstable();
+        edges.dedup();
+    }
+    graph
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Scc {
+    pub id: SccId,
+    pub members: Vec<NonterminalId>,
+    pub recursive: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SccAnalysis {
+    pub components: Vec<Scc>,
+    pub component_of: Vec<SccId>,
+}
+
+pub fn analyze_sccs(grammar: &Grammar) -> Result<SccAnalysis, CompileError> {
+    let graph = dependency_graph(grammar);
+    let node_count = graph.len();
+    let mut next_index = 0usize;
+    let mut indices = vec![None; node_count];
+    let mut lowlink = vec![0usize; node_count];
+    let mut on_stack = vec![false; node_count];
+    let mut tarjan_stack = Vec::new();
+    let mut components = Vec::new();
+
+    for root in 0..node_count {
+        if indices[root].is_some() {
+            continue;
+        }
+        discover(
+            root,
+            &mut next_index,
+            &mut indices,
+            &mut lowlink,
+            &mut on_stack,
+            &mut tarjan_stack,
+        )?;
+        let mut frames = vec![(root, 0usize)];
+        while let Some((node, edge_index)) = frames.last_mut() {
+            if *edge_index < graph[*node].len() {
+                let target = graph[*node][*edge_index] as usize;
+                *edge_index += 1;
+                if indices[target].is_none() {
+                    discover(
+                        target,
+                        &mut next_index,
+                        &mut indices,
+                        &mut lowlink,
+                        &mut on_stack,
+                        &mut tarjan_stack,
+                    )?;
+                    frames.push((target, 0));
+                } else if on_stack[target] {
+                    lowlink[*node] = lowlink[*node].min(indices[target].unwrap());
+                }
+                continue;
+            }
+
+            let completed = *node;
+            frames.pop();
+            if let Some((parent, _)) = frames.last() {
+                lowlink[*parent] = lowlink[*parent].min(lowlink[completed]);
+            }
+            if lowlink[completed] == indices[completed].unwrap() {
+                let mut members = Vec::new();
+                loop {
+                    let member = tarjan_stack.pop().ok_or(CompileError::InternalInvariant {
+                        message: "Tarjan stack became empty while closing a component",
+                    })?;
+                    on_stack[member] = false;
+                    members.push(member as NonterminalId);
+                    if member == completed {
+                        break;
+                    }
+                }
+                members.sort_unstable();
+                components.push(members);
+            }
+        }
+    }
+
+    components.sort_by_key(|members| members[0]);
+    let mut component_of = vec![0; node_count];
+    let mut reports = Vec::new();
+    for (index, members) in components.into_iter().enumerate() {
+        let id = to_u32(index, CompileStage::SccAnalysis)?;
+        for member in &members {
+            component_of[*member as usize] = id;
+        }
+        let recursive = members.len() > 1
+            || graph[members[0] as usize]
+                .binary_search(&members[0])
+                .is_ok();
+        reports.push(Scc {
+            id,
+            members,
+            recursive,
+        });
+    }
+    Ok(SccAnalysis {
+        components: reports,
+        component_of,
+    })
+}
+
+fn discover(
+    node: usize,
+    next_index: &mut usize,
+    indices: &mut [Option<usize>],
+    lowlink: &mut [usize],
+    on_stack: &mut [bool],
+    tarjan_stack: &mut Vec<usize>,
+) -> Result<(), CompileError> {
+    indices[node] = Some(*next_index);
+    lowlink[node] = *next_index;
+    *next_index = next_index
+        .checked_add(1)
+        .ok_or_else(|| resource_error(CompileStage::SccAnalysis, usize::MAX, usize::MAX - 1))?;
+    tarjan_stack.push(node);
+    on_stack[node] = true;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,5 +1013,78 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reduction_removes_unreachable_and_unproductive_symbols() {
+        let mut grammar = grammar(r#"{"const":1,"$defs":{"unused":{"const":2}}}"#);
+        let before = grammar.nonterminals.len();
+        let stats = reduce(&mut grammar).unwrap();
+        assert!(grammar.nonterminals.len() < before);
+        assert!(stats.removed_nonterminals > 0);
+        assert_eq!(grammar.productions.len(), 1);
+    }
+
+    #[test]
+    fn reduction_preserves_empty_language_start() {
+        let mut grammar = grammar("false");
+        reduce(&mut grammar).unwrap();
+        assert_eq!(grammar.start, 0);
+        assert_eq!(grammar.nonterminals.len(), 1);
+        assert!(grammar.productions.is_empty());
+    }
+
+    #[test]
+    fn reduction_preserves_epsilon_language() {
+        let provenance = Provenance {
+            resource: crate::schema::ResourceId(0),
+            pointer: crate::schema::SchemaPointer(String::new()),
+            keyword: None,
+        };
+        let mut grammar = Grammar {
+            start: 0,
+            nonterminals: vec![Nonterminal {
+                id: 0,
+                name: "start".to_owned(),
+                provenance: provenance.clone(),
+            }],
+            terminals: Vec::new(),
+            productions: vec![Production {
+                id: 0,
+                lhs: 0,
+                rhs: Vec::new(),
+                provenance,
+            }],
+        };
+        reduce(&mut grammar).unwrap();
+        assert_eq!(grammar.productions.len(), 1);
+        assert!(grammar.productions[0].rhs.is_empty());
+    }
+
+    #[test]
+    fn tarjan_is_deterministic_for_mutual_recursion() {
+        let schema = include_str!("../testdata/regressions/recursive_required_property.json");
+        let mut grammar = grammar(schema);
+        reduce(&mut grammar).unwrap();
+        let first = analyze_sccs(&grammar).unwrap();
+        let second = analyze_sccs(&grammar).unwrap();
+        assert_eq!(first, second);
+        assert!(first.components.iter().any(|component| component.recursive));
+        assert!(first
+            .components
+            .iter()
+            .all(|component| component.members.windows(2).all(|pair| pair[0] < pair[1])));
+    }
+
+    #[test]
+    fn acyclic_chain_has_no_recursive_component() {
+        let schema = include_str!("../testdata/regressions/deep_acyclic_ref.json");
+        let mut grammar = grammar(schema);
+        reduce(&mut grammar).unwrap();
+        let analysis = analyze_sccs(&grammar).unwrap();
+        assert!(analysis
+            .components
+            .iter()
+            .all(|component| !component.recursive));
     }
 }
