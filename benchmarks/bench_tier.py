@@ -68,6 +68,9 @@ class TierCompilerBenchmark:
     def track_vocabulary_projection_ns(self, schema):
         return self.profile["vocabulary_projection_ns"]
 
+    def track_vocabulary_trie_ns(self, schema):
+        return self.profile["vocabulary_trie_ns"]
+
     def track_dfa_states(self, schema):
         return self.compiled.tier_report()["dfa_states"]
 

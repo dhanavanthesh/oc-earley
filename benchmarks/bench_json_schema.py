@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 from oc_earley import Index, Vocabulary
 from oc_earley.json_schema import build_regex_from_schema
 

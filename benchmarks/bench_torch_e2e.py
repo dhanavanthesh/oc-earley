@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 import torch
 
 from oc_earley import Guide, Index, Vocabulary
@@ -27,8 +30,8 @@ class TorchE2EBenchmark:
         self.pattern = regex_samples[pattern_name]
         self.guide = Guide(Index(self.pattern, self.vocabulary))
 
-        self.mask = allocate_token_bitmask(len(self.vocabulary))
-        self.logits = torch.randn(1, len(self.vocabulary))
+        self.mask = allocate_token_bitmask(self.guide.vocab_size)
+        self.logits = torch.randn(1, self.guide.vocab_size)
 
     def time_write_mask_and_apply(self, pattern_name):
         self.guide.write_mask_into(

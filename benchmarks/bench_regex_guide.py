@@ -1,3 +1,6 @@
+# Portions derived from dottxt-ai/outlines-core and modified by OC-Earley contributors.
+# See PROVENANCE.md, NOTICE, and LICENSE.
+
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -94,9 +97,9 @@ class WriteMaskIntoBenchmark:
         from oc_earley.kernels.torch import allocate_token_bitmask
 
         self.vocab = Vocabulary.from_pretrained("gpt2")
-        self.mask = allocate_token_bitmask(len(self.vocab))
         self.index = Index(regex_samples[regex_key], self.vocab)
         self.guide = Guide(self.index)
+        self.mask = allocate_token_bitmask(self.guide.vocab_size)
 
     def time_write_mask_into(self, regex_key):
         self.guide.write_mask_into(
