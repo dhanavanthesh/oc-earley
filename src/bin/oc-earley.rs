@@ -41,9 +41,10 @@ fn run(arguments: Vec<String>) -> i32 {
             return EXIT_SCHEMA;
         }
     };
-    let (path, format, require_runtime) = match command {
-        Command::TierReport { schema, format } => (schema, format, false),
-        Command::Compile { schema, format } => (schema, format, true),
+    let (path, format) = match command {
+        Command::TierReport { schema, format } | Command::Compile { schema, format } => {
+            (schema, format)
+        }
         Command::Help => {
             println!("{}", usage());
             return 0;
@@ -66,10 +67,6 @@ fn run(arguments: Vec<String>) -> i32 {
     if let Err(message) = write_report(&report, format) {
         eprintln!("error: {message}");
         return EXIT_INTERNAL;
-    }
-    if require_runtime && report.selected_backend == BackendKind::StructuralPending {
-        eprintln!("error: structural backend required");
-        return EXIT_STRUCTURAL;
     }
     0
 }
@@ -140,7 +137,8 @@ fn render_text_report(report: &TierReport) -> String {
         "backend",
         match report.selected_backend {
             BackendKind::WholeDfa => "whole-dfa",
-            BackendKind::StructuralPending => "structural-pending",
+            BackendKind::Lalr => "lalr",
+            BackendKind::Earley => "earley",
         },
     );
     push_count(&mut output, "schema-nodes", report.schema_nodes);
@@ -155,6 +153,33 @@ fn render_text_report(report: &TierReport) -> String {
     push_optional_count(&mut output, "nfa-transitions", report.nfa_transitions);
     push_optional_count(&mut output, "dfa-states", report.dfa_states);
     push_optional_count(&mut output, "dfa-bytes", report.dfa_bytes);
+    push_count(
+        &mut output,
+        "collapsed-regular-regions",
+        report.collapsed_regular_regions,
+    );
+    push_count(&mut output, "compiled-terminals", report.compiled_terminals);
+    push_count(
+        &mut output,
+        "terminal-dfa-states",
+        report.terminal_dfa_states,
+    );
+    push_count(&mut output, "terminal-dfa-bytes", report.terminal_dfa_bytes);
+    push_count(
+        &mut output,
+        "canonical-lr-states",
+        report.canonical_lr_states,
+    );
+    push_count(&mut output, "lalr-states", report.lalr_states);
+    push_count(&mut output, "action-entries", report.action_entries);
+    push_count(&mut output, "goto-entries", report.goto_entries);
+    push_count(&mut output, "conflicts", report.conflicts);
+    push_count(
+        &mut output,
+        "nullable-nonterminals",
+        report.nullable_nonterminals,
+    );
+    push_count(&mut output, "leo-eligible-rules", report.leo_eligible_rules);
     for scc in &report.sccs {
         render_scc(&mut output, scc);
     }

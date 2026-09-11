@@ -601,8 +601,21 @@ impl PyCompiledSchema {
     fn backend(&self) -> &'static str {
         match self.compiled.report.selected_backend {
             crate::engine::BackendKind::WholeDfa => "whole_dfa",
-            crate::engine::BackendKind::StructuralPending => "structural_pending",
+            crate::engine::BackendKind::Lalr => "lalr",
+            crate::engine::BackendKind::Earley => "earley",
         }
+    }
+
+    /// Creates an incremental byte recognizer for the selected backend.
+    fn recognizer(&self) -> PyResult<PyRecognizer> {
+        let state = self
+            .compiled
+            .recognizer(crate::schema::RuntimeLimits::default())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(PyRecognizer {
+            state,
+            checkpoints: Vec::new(),
+        })
     }
 
     /// Creates a guide when the selected backend is available.
@@ -658,6 +671,80 @@ impl PyCompiledSchema {
             vocabulary: payload.vocabulary,
         })
     }
+}
+
+/// An incremental recognizer over canonical JSON bytes.
+#[pyclass(name = "Recognizer", module = "oc_earley", skip_from_py_object)]
+pub struct PyRecognizer {
+    state: crate::engine::RecognizerState,
+    checkpoints: Vec<crate::engine::RecognizerCheckpoint>,
+}
+
+#[pymethods]
+impl PyRecognizer {
+    /// Advances transactionally by a string or byte sequence.
+    fn advance(&mut self, data: &Bound<'_, PyAny>) -> PyResult<&'static str> {
+        let bytes = runtime_bytes(data)?;
+        self.state
+            .try_advance_bytes(&bytes)
+            .map(|advance| match advance {
+                crate::engine::Advance::Rejected => "rejected",
+                crate::engine::Advance::Live => "live",
+                crate::engine::Advance::Accepting => "accepting",
+            })
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[getter]
+    fn accepting(&self) -> bool {
+        self.state.is_accepting()
+    }
+
+    #[getter]
+    fn live(&self) -> bool {
+        self.state.is_live()
+    }
+
+    /// Stores a checkpoint and returns its opaque handle.
+    fn checkpoint(&mut self) -> PyResult<usize> {
+        let limit = crate::schema::RuntimeLimits::default().max_checkpoint_history;
+        if self.checkpoints.len() >= limit {
+            return Err(PyValueError::new_err(format!(
+                "runtime limit exceeded for CheckpointHistory: {} > {limit}",
+                self.checkpoints.len().saturating_add(1)
+            )));
+        }
+        self.checkpoints.push(self.state.checkpoint());
+        Ok(self.checkpoints.len() - 1)
+    }
+
+    /// Restores a checkpoint created by this recognizer.
+    fn restore(&mut self, handle: usize) -> PyResult<()> {
+        let checkpoint = self
+            .checkpoints
+            .get(handle)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid checkpoint handle {handle}")))?;
+        self.state
+            .restore(checkpoint)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Returns deterministic recognizer counters.
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        serde_pyobject::to_pyobject(py, &self.state.stats())
+            .map(Bound::unbind)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
+
+fn runtime_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(bytes) = data.extract::<Vec<u8>>() {
+        return Ok(bytes);
+    }
+    if let Ok(text) = data.extract::<String>() {
+        return Ok(text.into_bytes());
+    }
+    Err(PyValueError::new_err("expected str or bytes"))
 }
 
 fn schema_bytes(schema: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
@@ -729,6 +816,7 @@ fn oc_earley(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVocabulary>()?;
     m.add_class::<PyGuide>()?;
     m.add_class::<PyCompiledSchema>()?;
+    m.add_class::<PyRecognizer>()?;
     register_child_module(m)?;
 
     Ok(())

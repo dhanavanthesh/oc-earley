@@ -98,6 +98,50 @@ pub enum CompileStage {
     NfaConstruction,
     DfaDeterminization,
     VocabularyProjection,
+    ResidualGrammar,
+    TerminalCompilation,
+    LrConstruction,
+    LalrMerge,
+    LalrTable,
+    EarleyPreparation,
+    LeoPreparation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeResource {
+    InputBytes,
+    ParseStack,
+    ChartColumns,
+    ItemsPerColumn,
+    TotalItems,
+    ActiveScans,
+    LeoItems,
+    CheckpointHistory,
+}
+
+impl std::fmt::Display for RuntimeResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+#[derive(Error, Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeError {
+    #[error("byte 0x{byte:02x} is rejected at position {position}")]
+    RejectedByte { position: u32, byte: u8 },
+    #[error("runtime limit exceeded for {resource}: {observed} > {limit}")]
+    ResourceLimitExceeded {
+        resource: RuntimeResource,
+        observed: usize,
+        limit: usize,
+    },
+    #[error("checkpoint generation {found_generation} does not match {expected_generation}")]
+    InvalidCheckpoint {
+        expected_generation: u64,
+        found_generation: u64,
+    },
+    #[error("runtime invariant failed: {message}")]
+    InternalInvariant { message: &'static str },
 }
 
 impl std::fmt::Display for CompileStage {
@@ -157,6 +201,12 @@ pub enum CompileError {
     },
     #[error("a structural backend is required at {location}")]
     StructuralBackendRequired { location: DiagnosticLocation },
+    #[error("backend `{backend}` is unavailable at {location}: {reason}")]
+    BackendUnavailable {
+        backend: &'static str,
+        location: DiagnosticLocation,
+        reason: String,
+    },
     #[error("compiled format version {found} is unsupported; expected {expected}")]
     IncompatibleCompiledFormat { found: u32, expected: u32 },
     #[error("regular automaton construction failed at {pointer}: {message}")]

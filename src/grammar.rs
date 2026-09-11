@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use regex_automata::dfa::{dense, Automaton};
@@ -66,7 +67,7 @@ impl RegularTerminal {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Symbol {
     Nonterminal(NonterminalId),
     Terminal(TerminalId),
@@ -1761,6 +1762,462 @@ pub struct RegularAnalysis {
     pub whole_language: Option<RegularExpression>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledTerminal {
+    Literal(Arc<[u8]>),
+    Dfa(Arc<CompiledByteDfa>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TerminalCursorState {
+    Literal(u32),
+    Dfa(u32),
+}
+
+impl CompiledTerminal {
+    #[must_use]
+    pub fn start(&self) -> TerminalCursorState {
+        match self {
+            Self::Literal(_) => TerminalCursorState::Literal(0),
+            Self::Dfa(dfa) => TerminalCursorState::Dfa(dfa.start_state()),
+        }
+    }
+
+    #[must_use]
+    pub fn advance(&self, cursor: TerminalCursorState, byte: u8) -> Option<TerminalCursorState> {
+        match (self, cursor) {
+            (Self::Literal(bytes), TerminalCursorState::Literal(offset)) => {
+                let index = usize::try_from(offset).ok()?;
+                if bytes.get(index).copied()? != byte {
+                    return None;
+                }
+                u32::try_from(index.checked_add(1)?)
+                    .ok()
+                    .map(TerminalCursorState::Literal)
+            }
+            (Self::Dfa(dfa), TerminalCursorState::Dfa(state)) => {
+                let next = dfa.next_state(state, byte);
+                (!dfa.is_dead(next)).then_some(TerminalCursorState::Dfa(next))
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_accepting(&self, cursor: TerminalCursorState) -> bool {
+        match (self, cursor) {
+            (Self::Literal(bytes), TerminalCursorState::Literal(offset)) => {
+                usize::try_from(offset).ok() == Some(bytes.len())
+            }
+            (Self::Dfa(dfa), TerminalCursorState::Dfa(state)) => dfa.is_accepting(state),
+            _ => false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_live(&self, cursor: TerminalCursorState) -> bool {
+        match (self, cursor) {
+            (Self::Literal(bytes), TerminalCursorState::Literal(offset)) => {
+                usize::try_from(offset).is_ok_and(|offset| offset < bytes.len())
+            }
+            (Self::Dfa(dfa), TerminalCursorState::Dfa(state)) => dfa.is_live(state),
+            _ => false,
+        }
+    }
+
+    #[must_use]
+    pub fn accepts_empty(&self) -> bool {
+        self.is_accepting(self.start())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResidualNonterminal {
+    pub id: NonterminalId,
+    pub original: NonterminalId,
+    pub name: String,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResidualProduction {
+    pub id: ProductionId,
+    pub original: ProductionId,
+    pub lhs: NonterminalId,
+    pub rhs: Vec<Symbol>,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResidualGrammar {
+    pub start: NonterminalId,
+    pub nonterminals: Vec<ResidualNonterminal>,
+    pub terminals: Vec<CompiledTerminal>,
+    pub terminal_provenance: Vec<Provenance>,
+    pub productions: Vec<ResidualProduction>,
+    pub productions_by_lhs: Vec<Vec<ProductionId>>,
+    pub nullable: Vec<bool>,
+    pub productive_suffixes: Vec<Vec<bool>>,
+    pub collapsed_nonterminals: usize,
+    pub collapsed_regions: usize,
+    pub terminal_dfa_states: usize,
+    pub terminal_dfa_bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TerminalLanguage {
+    Literal(Vec<u8>),
+    Expression(RegularExpression),
+}
+
+pub fn build_residual(
+    grammar: &Grammar,
+    analysis: &RegularAnalysis,
+    limits: &CompileLimits,
+) -> Result<ResidualGrammar, CompileError> {
+    let original_nullable = productive_nonterminals_for_empty(grammar)?;
+    let mut retained = vec![false; grammar.nonterminals.len()];
+    for (nonterminal, keep) in retained.iter_mut().enumerate() {
+        let component = analysis.sccs.component_of[nonterminal] as usize;
+        *keep = analysis.certificates[component].kind.is_none();
+    }
+    retained[grammar.start as usize] = true;
+
+    loop {
+        let mut changed = false;
+        for production in &grammar.productions {
+            if !retained[production.lhs as usize] {
+                continue;
+            }
+            for symbol in &production.rhs {
+                let Symbol::Nonterminal(target) = symbol else {
+                    continue;
+                };
+                let target = *target as usize;
+                if original_nullable[target] && !retained[target] {
+                    retained[target] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut remap = vec![None; grammar.nonterminals.len()];
+    let mut nonterminals = Vec::new();
+    for original in &grammar.nonterminals {
+        if !retained[original.id as usize] {
+            continue;
+        }
+        enforce_limit(
+            CompileStage::ResidualGrammar,
+            nonterminals.len().saturating_add(1),
+            limits.max_symbols,
+        )?;
+        let id = to_u32(nonterminals.len(), CompileStage::ResidualGrammar)?;
+        remap[original.id as usize] = Some(id);
+        nonterminals.push(ResidualNonterminal {
+            id,
+            original: original.id,
+            name: original.name.clone(),
+            provenance: original.provenance.clone(),
+        });
+    }
+
+    let mut terminal_cache = BTreeMap::new();
+    let mut terminals = Vec::new();
+    let mut terminal_provenance = Vec::new();
+    let mut terminal_dfa_states = 0_usize;
+    let mut terminal_dfa_bytes = 0_usize;
+    let mut productions = Vec::new();
+    let mut rhs_symbols = 0_usize;
+
+    for production in &grammar.productions {
+        let Some(lhs) = remap[production.lhs as usize] else {
+            continue;
+        };
+        let mut rhs = Vec::new();
+        rhs.try_reserve_exact(production.rhs.len()).map_err(|_| {
+            resource_error(
+                CompileStage::ResidualGrammar,
+                production.rhs.len(),
+                limits.max_rhs_symbols,
+            )
+        })?;
+        for symbol in &production.rhs {
+            match symbol {
+                Symbol::Terminal(id) => {
+                    let terminal = grammar.terminals.get(*id as usize).ok_or(
+                        CompileError::InternalInvariant {
+                            message: "grammar terminal does not exist",
+                        },
+                    )?;
+                    let language = match &terminal.kind {
+                        RegularTerminalKind::Literal(bytes) => {
+                            TerminalLanguage::Literal(bytes.clone())
+                        }
+                        RegularTerminalKind::Pattern { forward, reverse } => {
+                            TerminalLanguage::Expression(RegularExpression::Atom {
+                                forward: forward.clone(),
+                                reverse: reverse.clone(),
+                            })
+                        }
+                    };
+                    let terminal_id = compile_terminal(
+                        language,
+                        &terminal.provenance,
+                        limits,
+                        &mut terminal_cache,
+                        &mut terminals,
+                        &mut terminal_provenance,
+                        &mut terminal_dfa_states,
+                        &mut terminal_dfa_bytes,
+                    )?;
+                    rhs.push(Symbol::Terminal(terminal_id));
+                }
+                Symbol::Nonterminal(id) => {
+                    if let Some(id) = remap[*id as usize] {
+                        rhs.push(Symbol::Nonterminal(id));
+                    } else {
+                        let expression = analysis.expressions[*id as usize].clone().ok_or(
+                            CompileError::InternalInvariant {
+                                message: "certified dependency has no regular expression",
+                            },
+                        )?;
+                        let provenance = &grammar.nonterminals[*id as usize].provenance;
+                        let terminal_id = compile_terminal(
+                            TerminalLanguage::Expression(expression),
+                            provenance,
+                            limits,
+                            &mut terminal_cache,
+                            &mut terminals,
+                            &mut terminal_provenance,
+                            &mut terminal_dfa_states,
+                            &mut terminal_dfa_bytes,
+                        )?;
+                        rhs.push(Symbol::Terminal(terminal_id));
+                    }
+                }
+            }
+        }
+        rhs_symbols = rhs_symbols.checked_add(rhs.len()).ok_or_else(|| {
+            resource_error(
+                CompileStage::ResidualGrammar,
+                usize::MAX,
+                limits.max_rhs_symbols,
+            )
+        })?;
+        enforce_limit(
+            CompileStage::ResidualGrammar,
+            rhs_symbols,
+            limits.max_rhs_symbols,
+        )?;
+        enforce_limit(
+            CompileStage::ResidualGrammar,
+            productions.len().saturating_add(1),
+            limits.max_productions,
+        )?;
+        let id = to_u32(productions.len(), CompileStage::ResidualGrammar)?;
+        productions.push(ResidualProduction {
+            id,
+            original: production.id,
+            lhs,
+            rhs,
+            provenance: production.provenance.clone(),
+        });
+    }
+
+    let mut productions_by_lhs = vec![Vec::new(); nonterminals.len()];
+    for production in &productions {
+        productions_by_lhs[production.lhs as usize].push(production.id);
+    }
+    let nullable = residual_nullable(nonterminals.len(), &productions)?;
+    let productive_suffixes = productions
+        .iter()
+        .map(|production| nullable_suffixes(&production.rhs, &nullable))
+        .collect();
+    let start = remap[grammar.start as usize].ok_or(CompileError::InternalInvariant {
+        message: "residual grammar start was removed",
+    })?;
+    Ok(ResidualGrammar {
+        start,
+        collapsed_nonterminals: retained.iter().filter(|keep| !**keep).count(),
+        collapsed_regions: analysis
+            .sccs
+            .components
+            .iter()
+            .filter(|component| {
+                component
+                    .members
+                    .iter()
+                    .all(|member| !retained[*member as usize])
+            })
+            .count(),
+        nonterminals,
+        terminals,
+        terminal_provenance,
+        productions,
+        productions_by_lhs,
+        nullable,
+        productive_suffixes,
+        terminal_dfa_states,
+        terminal_dfa_bytes,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_terminal(
+    language: TerminalLanguage,
+    provenance: &Provenance,
+    limits: &CompileLimits,
+    cache: &mut BTreeMap<TerminalLanguage, TerminalId>,
+    terminals: &mut Vec<CompiledTerminal>,
+    terminal_provenance: &mut Vec<Provenance>,
+    dfa_states: &mut usize,
+    dfa_bytes: &mut usize,
+) -> Result<TerminalId, CompileError> {
+    if let Some(id) = cache.get(&language) {
+        return Ok(*id);
+    }
+    let compiled = match &language {
+        TerminalLanguage::Literal(bytes) if !bytes.is_empty() => {
+            CompiledTerminal::Literal(Arc::from(bytes.as_slice()))
+        }
+        TerminalLanguage::Literal(_) => {
+            return Err(CompileError::InternalInvariant {
+                message: "empty literal remained as a parser terminal",
+            });
+        }
+        TerminalLanguage::Expression(expression) => {
+            let mut terminal_limits = limits.clone();
+            terminal_limits.max_nfa_states = terminal_limits
+                .max_nfa_states
+                .min(limits.max_terminal_dfa_states);
+            terminal_limits.max_dfa_states = terminal_limits
+                .max_dfa_states
+                .min(limits.max_terminal_dfa_states);
+            terminal_limits.max_dfa_bytes = terminal_limits
+                .max_dfa_bytes
+                .min(limits.max_terminal_dfa_bytes);
+            let dfa = CompiledByteDfa::compile(expression, &terminal_limits, &provenance.pointer)
+                .map_err(|error| match error {
+                CompileError::ResourceLimitExceeded {
+                    observed, limit, ..
+                } => CompileError::ResourceLimitExceeded {
+                    stage: CompileStage::TerminalCompilation,
+                    observed,
+                    limit,
+                },
+                other => other,
+            })?;
+            if dfa.is_accepting(dfa.start_state()) {
+                return Err(CompileError::InternalInvariant {
+                    message: "nullable regular region was collapsed into a parser terminal",
+                });
+            }
+            *dfa_states = dfa_states.checked_add(dfa.state_count()).ok_or_else(|| {
+                resource_error(
+                    CompileStage::TerminalCompilation,
+                    usize::MAX,
+                    limits.max_terminal_dfa_states,
+                )
+            })?;
+            *dfa_bytes = dfa_bytes.checked_add(dfa.memory_bytes()).ok_or_else(|| {
+                resource_error(
+                    CompileStage::TerminalCompilation,
+                    usize::MAX,
+                    limits.max_terminal_dfa_bytes,
+                )
+            })?;
+            enforce_limit(
+                CompileStage::TerminalCompilation,
+                *dfa_states,
+                limits.max_terminal_dfa_states,
+            )?;
+            enforce_limit(
+                CompileStage::TerminalCompilation,
+                *dfa_bytes,
+                limits.max_terminal_dfa_bytes,
+            )?;
+            CompiledTerminal::Dfa(Arc::new(dfa))
+        }
+    };
+    let id = to_u32(terminals.len(), CompileStage::TerminalCompilation)?;
+    terminals.try_reserve_exact(1).map_err(|_| {
+        resource_error(
+            CompileStage::TerminalCompilation,
+            terminals.len().saturating_add(1),
+            limits.max_symbols,
+        )
+    })?;
+    terminals.push(compiled);
+    terminal_provenance.push(provenance.clone());
+    cache.insert(language, id);
+    Ok(id)
+}
+
+fn productive_nonterminals_for_empty(grammar: &Grammar) -> Result<Vec<bool>, CompileError> {
+    let mut nullable = vec![false; grammar.nonterminals.len()];
+    loop {
+        let mut changed = false;
+        for production in &grammar.productions {
+            if nullable[production.lhs as usize] {
+                continue;
+            }
+            if production.rhs.iter().all(|symbol| match symbol {
+                Symbol::Nonterminal(id) => nullable[*id as usize],
+                Symbol::Terminal(_) => false,
+            }) {
+                nullable[production.lhs as usize] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(nullable);
+        }
+    }
+}
+
+fn residual_nullable(
+    count: usize,
+    productions: &[ResidualProduction],
+) -> Result<Vec<bool>, CompileError> {
+    let mut nullable = vec![false; count];
+    loop {
+        let mut changed = false;
+        for production in productions {
+            let lhs =
+                usize::try_from(production.lhs).map_err(|_| CompileError::InternalInvariant {
+                    message: "residual nonterminal does not fit usize",
+                })?;
+            if !nullable[lhs]
+                && production.rhs.iter().all(|symbol| match symbol {
+                    Symbol::Nonterminal(id) => nullable[*id as usize],
+                    Symbol::Terminal(_) => false,
+                })
+            {
+                nullable[lhs] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(nullable);
+        }
+    }
+}
+
+fn nullable_suffixes(rhs: &[Symbol], nullable: &[bool]) -> Vec<bool> {
+    let mut result = vec![false; rhs.len() + 1];
+    result[rhs.len()] = true;
+    for index in (0..rhs.len()).rev() {
+        result[index] = result[index + 1]
+            && matches!(rhs[index], Symbol::Nonterminal(id) if nullable[id as usize]);
+    }
+    result
+}
+
 pub fn certify_regular(grammar: &Grammar) -> Result<RegularAnalysis, CompileError> {
     let sccs = analyze_sccs(grammar)?;
     certify_regular_with_sccs(grammar, sccs)
@@ -2384,6 +2841,53 @@ mod tests {
                 )
             )
         }));
+    }
+
+    #[test]
+    fn residual_grammar_is_deterministic_and_shares_terminal_languages() {
+        let schema = include_str!("../testdata/regressions/recursive_optional_property.json");
+        let mut grammar = grammar(schema);
+        reduce(&mut grammar).unwrap();
+        let analysis = certify_regular(&grammar).unwrap();
+        let limits = CompileLimits::default();
+
+        let first = build_residual(&grammar, &analysis, &limits).unwrap();
+        let second = build_residual(&grammar, &analysis, &limits).unwrap();
+        assert_eq!(first, second);
+        assert!(first.collapsed_nonterminals > 0);
+
+        for left in 0..first.terminals.len() {
+            for right in left + 1..first.terminals.len() {
+                assert_ne!(first.terminals[left], first.terminals[right]);
+            }
+        }
+
+        for (lhs, production_ids) in first.productions_by_lhs.iter().enumerate() {
+            assert!(production_ids.windows(2).all(|pair| pair[0] < pair[1]));
+            for production_id in production_ids {
+                assert_eq!(first.productions[*production_id as usize].lhs, lhs as u32);
+            }
+        }
+    }
+
+    #[test]
+    fn residual_terminal_budget_failure_is_typed() {
+        let schema = include_str!("../testdata/regressions/recursive_optional_property.json");
+        let mut grammar = grammar(schema);
+        reduce(&mut grammar).unwrap();
+        let analysis = certify_regular(&grammar).unwrap();
+        let limits = CompileLimits {
+            max_terminal_dfa_states: 0,
+            ..CompileLimits::default()
+        };
+
+        assert!(matches!(
+            build_residual(&grammar, &analysis, &limits),
+            Err(CompileError::ResourceLimitExceeded {
+                stage: CompileStage::TerminalCompilation,
+                ..
+            })
+        ));
     }
 
     fn manual_linear_grammar(left: bool) -> Grammar {

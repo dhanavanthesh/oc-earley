@@ -81,19 +81,26 @@
 //! }
 //! ```
 
+pub mod earley;
 pub mod engine;
 pub mod error;
 pub mod grammar;
 pub mod index;
 pub mod json_schema;
+pub mod lalr;
 pub mod prelude;
 pub mod primitives;
 pub mod schema;
 pub mod vocabulary;
 
-pub use engine::{CompileProfile, CompiledBackend, CompiledSchema, SemanticContract, TierReport};
-pub use error::{CompileError, CompileStage, Error, Result};
-pub use schema::{CompileLimits, CompileOptions};
+pub use earley::{CompiledEarley, EarleyRecognizer, EarleyStats};
+pub use engine::{
+    Advance, BackendKind, BackendPolicy, CompileProfile, CompiledBackend, CompiledSchema,
+    Recognizer, RecognizerCheckpoint, RecognizerState, RecognizerStats, SemanticContract,
+    TierReport,
+};
+pub use error::{CompileError, CompileStage, Error, Result, RuntimeError, RuntimeResource};
+pub use schema::{CompileLimits, CompileOptions, RuntimeLimits};
 
 #[cfg(feature = "python-bindings")]
 mod python_bindings;

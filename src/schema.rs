@@ -77,6 +77,13 @@ pub struct CompileLimits {
     pub max_nfa_transitions: usize,
     pub max_dfa_states: usize,
     pub max_dfa_bytes: usize,
+    pub max_terminal_dfa_states: usize,
+    pub max_terminal_dfa_bytes: usize,
+    pub max_lr_states: usize,
+    pub max_lr_items: usize,
+    pub max_action_entries: usize,
+    pub max_goto_entries: usize,
+    pub max_reported_conflicts: usize,
 }
 
 impl Default for CompileLimits {
@@ -92,6 +99,40 @@ impl Default for CompileLimits {
             max_nfa_transitions: 4_000_000,
             max_dfa_states: 200_000,
             max_dfa_bytes: 512 * 1024 * 1024,
+            max_terminal_dfa_states: 200_000,
+            max_terminal_dfa_bytes: 256 * 1024 * 1024,
+            max_lr_states: 100_000,
+            max_lr_items: 2_000_000,
+            max_action_entries: 2_000_000,
+            max_goto_entries: 1_000_000,
+            max_reported_conflicts: 1_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeLimits {
+    pub max_input_bytes: usize,
+    pub max_parse_stack: usize,
+    pub max_chart_columns: usize,
+    pub max_items_per_column: usize,
+    pub max_total_items: usize,
+    pub max_active_scans: usize,
+    pub max_leo_items: usize,
+    pub max_checkpoint_history: usize,
+}
+
+impl Default for RuntimeLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: 16 * 1024 * 1024,
+            max_parse_stack: 1_000_000,
+            max_chart_columns: 16 * 1024 * 1024,
+            max_items_per_column: 1_000_000,
+            max_total_items: 16_000_000,
+            max_active_scans: 1_000_000,
+            max_leo_items: 1_000_000,
+            max_checkpoint_history: 100_000,
         }
     }
 }
